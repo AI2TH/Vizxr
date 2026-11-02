@@ -1,55 +1,75 @@
 #!/bin/bash
 set -e
+export MSYS_NO_PATHCONV=1
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-IMAGE_NAME="vizxr-builder"
-BUILD_TYPE="${1:-debug}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && (pwd -W 2>/dev/null || pwd))"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && (pwd -W 2>/dev/null || pwd))"
+BUILD_TYPE="${1:-release}"
 OUTPUT_DIR="${PROJECT_ROOT}/build"
+IMAGE_NAME="${IMAGE_NAME:-localhost/linxr-builder:latest}"
+
+if [ -n "${USERPROFILE}" ] && [ -d "${USERPROFILE}/.gradle" ]; then
+    GRADLE_DIR="${USERPROFILE}/.gradle"
+elif [ -d "${HOME}/.gradle" ]; then
+    GRADLE_DIR="${HOME}/.gradle"
+else
+    mkdir -p "${HOME}/.gradle"
+    GRADLE_DIR="${HOME}/.gradle"
+fi
+GRADLE_DIR="${GRADLE_DIR//\\//}"
+
+if command -v podman &>/dev/null; then
+    CONTAINER_CMD="podman"
+elif command -v docker &>/dev/null; then
+    CONTAINER_CMD="docker"
+else
+    echo "ERROR: Neither podman nor docker found in PATH."
+    exit 1
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 
-if ! docker image inspect "${IMAGE_NAME}" &>/dev/null; then
-    echo "=== Building Docker build environment ==="
-    docker build -t "${IMAGE_NAME}" -f "${PROJECT_ROOT}/docker/Dockerfile.build" "${PROJECT_ROOT}"
-fi
+echo "=== Building Vizxr APK (${BUILD_TYPE}) inside ${CONTAINER_CMD} ==="
+echo "Project : ${PROJECT_ROOT}"
+echo "Image   : ${IMAGE_NAME}"
+echo "Output  : ${OUTPUT_DIR}/vizxr-${BUILD_TYPE}.apk"
 
-echo "=== Building Vizxr APK (${BUILD_TYPE}) inside Docker ==="
-
-docker run --rm \
+"${CONTAINER_CMD}" run --rm \
+    --platform linux/amd64 \
     -v "${PROJECT_ROOT}:/src:ro" \
     -v "${OUTPUT_DIR}:/out" \
+    -v "${GRADLE_DIR}:/root/.gradle" \
     "${IMAGE_NAME}" \
-    bash -c "
+    bash -c '
 set -e
+git config --global --add safe.directory /opt/flutter 2>/dev/null || true
+
+echo "--- Step 1: Scaffold fresh workspace ---"
 flutter create --no-pub --project-name vizxr --org com.ai2th --platforms android /tmp/workspace
 cd /tmp/workspace
+
+echo "--- Step 2: Apply Vizxr sources ---"
 cp -r /src/lib/. lib/
 cp /src/pubspec.yaml pubspec.yaml
 cp /src/android/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
-# Add assets if present
 [ -d /src/assets ] && cp -r /src/assets/. assets/ || true
 
-printf 'flutter.sdk=/opt/flutter\nsdk.dir=/opt/android-sdk\n' > android/local.properties
+echo "--- Step 2b: Fix Gradle wrapper to 8.11.1 ---"
+sed -i "s|distributionUrl=.*|distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-bin.zip|" \
+    android/gradle/wrapper/gradle-wrapper.properties
+
+printf "flutter.sdk=/opt/flutter\nsdk.dir=/opt/android-sdk\n" > android/local.properties
+
+echo "--- Step 3: flutter pub get ---"
 flutter pub get
-flutter build apk --${BUILD_TYPE}
-cp build/app/outputs/flutter-apk/app-${BUILD_TYPE}.apk /out/vizxr-${BUILD_TYPE}.apk
-"
 
-echo "✅ Build complete: ${OUTPUT_DIR}/vizxr-${BUILD_TYPE}.apk"
+echo "--- Step 4: flutter build apk ---"
+export GRADLE_OPTS="-Dorg.gradle.daemon=false -Xmx3g -Dorg.gradle.internal.http.connectionTimeout=60000 -Dorg.gradle.internal.http.socketTimeout=60000"
+flutter build apk --'"${BUILD_TYPE}"' --no-tree-shake-icons
 
-if [ -n "$DOCKER_USERNAME" ] && [ -n "$DOCKER_PASSWORD" ]; then
-    echo "=== Pushing Artifact to Registry ==="
-    echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-    
-    # Wrap APK in a minimal image for storage in registry
-    cat <<EOF > "${OUTPUT_DIR}/Dockerfile.artifact"
-FROM scratch
-COPY vizxr-${BUILD_TYPE}.apk /vizxr-${BUILD_TYPE}.apk
-EOF
-    
-    IMAGE_TAG="${DOCKER_USERNAME}/vizxr:${BUILD_TYPE}"
-    docker build -t "\$IMAGE_TAG" -f "${OUTPUT_DIR}/Dockerfile.artifact" "${OUTPUT_DIR}"
-    docker push "\$IMAGE_TAG"
-    echo "✅ Artifact pushed: \$IMAGE_TAG"
-fi
+echo "--- Step 5: Copy APK to output ---"
+cp build/app/outputs/flutter-apk/app-'"${BUILD_TYPE}"'.apk /out/vizxr-'"${BUILD_TYPE}"'.apk
+echo "APK size: $(du -sh /out/vizxr-'"${BUILD_TYPE}"'.apk | cut -f1)"
+'
+
+echo "✅ Vizxr APK build complete: ${OUTPUT_DIR}/vizxr-${BUILD_TYPE}.apk"

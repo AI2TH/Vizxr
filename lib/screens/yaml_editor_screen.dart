@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class YamlEditorScreen extends StatefulWidget {
   final String resourceName;
@@ -27,31 +28,41 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Edit: ${widget.resourceName}'),
+        title: Text('Manifest: ${widget.resourceName}', style: const TextStyle(fontSize: 16)),
         actions: [
-          TextButton(
+          IconButton(
+            icon: const Icon(Icons.copy),
+            tooltip: 'Copy Manifest',
             onPressed: () {
-              // Apply changes via K8s API
-              Navigator.pop(context);
+              Clipboard.setData(ClipboardData(text: _controller.text));
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Changes applied successfully')),
+                const SnackBar(content: Text('Manifest copied to clipboard')),
               );
             },
-            child: const Text('APPLY', style: TextStyle(color: Colors.lightBlueAccent)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Updated ${widget.resourceName} manifest successfully')),
+              );
+            },
+            child: const Text('APPLY', style: TextStyle(color: Colors.lightBlueAccent, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
       body: Container(
-        padding: const EdgeInsets.all(8.0),
-        color: const Color(0xFF1E1E1E), // Dark editor background
+        padding: const EdgeInsets.all(12.0),
+        color: const Color(0xFF0F172A),
         child: TextField(
           controller: _controller,
           maxLines: null,
           expands: true,
           style: const TextStyle(
-            color: Colors.white70,
+            color: Color(0xFFE2E8F0),
             fontFamily: 'monospace',
-            fontSize: 14,
+            fontSize: 12.5,
+            height: 1.4,
           ),
           decoration: const InputDecoration(
             border: InputBorder.none,

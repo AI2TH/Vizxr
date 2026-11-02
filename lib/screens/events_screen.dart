@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 
 class EventsScreen extends StatefulWidget {
@@ -9,19 +11,32 @@ class EventsScreen extends StatefulWidget {
 }
 
 class _EventsScreenState extends State<EventsScreen> {
-  final K8sClientService _client = K8sClientService(baseUrl: 'https://127.0.0.1:6443');
   late Future<List<K8sResource>> _future;
 
   @override
-  void initState() {
-    super.initState();
-    _future = _client.fetchEvents();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _refresh();
+  }
+
+  void _refresh() {
+    final clusterState = context.read<ClusterState>();
+    setState(() {
+      _future = clusterState.client.fetchEvents(
+        namespace: clusterState.currentNamespace,
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Cluster Events')),
+      appBar: AppBar(
+        title: const Text('Cluster Events', style: TextStyle(fontSize: 16)),
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _refresh),
+        ],
+      ),
       body: FutureBuilder<List<K8sResource>>(
         future: _future,
         builder: (context, snapshot) {
@@ -35,11 +50,7 @@ class _EventsScreenState extends State<EventsScreen> {
 
           final events = snapshot.data!;
           return RefreshIndicator(
-            onRefresh: () async {
-              setState(() {
-                _future = _client.fetchEvents();
-              });
-            },
+            onRefresh: () async => _refresh(),
             child: ListView.separated(
               itemCount: events.length,
               separatorBuilder: (context, index) => const Divider(height: 1),
@@ -49,10 +60,13 @@ class _EventsScreenState extends State<EventsScreen> {
                 return ListTile(
                   leading: Icon(
                     isWarning ? Icons.warning_amber_rounded : Icons.info_outline,
-                    color: isWarning ? Colors.redAccent : Colors.blueAccent,
+                    color: isWarning ? Colors.amberAccent : Colors.lightBlueAccent,
                   ),
-                  title: Text(ev.message ?? '', style: const TextStyle(fontSize: 14)),
-                  subtitle: Text('${ev.name} • ${ev.namespace} • ${ev.age}'),
+                  title: Text(ev.message ?? '', style: const TextStyle(fontSize: 13)),
+                  subtitle: Text(
+                    '${ev.name} • ${ev.namespace} • ${ev.age}',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
                 );
               },
             ),
