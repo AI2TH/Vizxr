@@ -7,16 +7,16 @@ class ConfigScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
+    return const DefaultTabController(
       length: 2,
       child: Scaffold(
-        appBar: const TabBar(
+        appBar: TabBar(
           tabs: [
             Tab(text: 'ConfigMaps'),
             Tab(text: 'Secrets'),
           ],
         ),
-        body: const TabBarView(
+        body: TabBarView(
           children: [
             ResourceListView(type: K8sResourceType.configMap),
             ResourceListView(type: K8sResourceType.secret),

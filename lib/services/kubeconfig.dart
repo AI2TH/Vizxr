@@ -8,6 +8,8 @@ class KubeConfig {
   final String server;
   final String? token;
   final String? caCert;
+  final String? clientCertData;
+  final String? clientKeyData;
   final String defaultNamespace;
   final bool insecureSkipTlsVerify;
 
@@ -16,6 +18,8 @@ class KubeConfig {
     required this.server,
     this.token,
     this.caCert,
+    this.clientCertData,
+    this.clientKeyData,
     this.defaultNamespace = 'default',
     this.insecureSkipTlsVerify = true,
   });
@@ -25,6 +29,8 @@ class KubeConfig {
     'server': server,
     'token': token,
     'caCert': caCert,
+    'clientCertData': clientCertData,
+    'clientKeyData': clientKeyData,
     'defaultNamespace': defaultNamespace,
     'insecureSkipTlsVerify': insecureSkipTlsVerify,
   };
@@ -34,6 +40,8 @@ class KubeConfig {
     server: json['server'] ?? 'https://127.0.0.1:6443',
     token: json['token'],
     caCert: json['caCert'],
+    clientCertData: json['clientCertData'],
+    clientKeyData: json['clientKeyData'],
     defaultNamespace: json['defaultNamespace'] ?? 'default',
     insecureSkipTlsVerify: json['insecureSkipTlsVerify'] ?? true,
   );
@@ -43,7 +51,7 @@ class KubeConfig {
   static Future<void> saveConfig(KubeConfig config) async {
     final prefs = await SharedPreferences.getInstance();
     final List<String> configs = prefs.getStringList(_storageKey) ?? [];
-    
+
     // Remove existing config with same name if any
     configs.removeWhere((s) {
       try {
@@ -72,18 +80,51 @@ class KubeConfig {
     await prefs.setStringList(_storageKey, configs);
   }
 
+  static Future<KubeConfig> addFromFilePath(String filePath) async {
+    final file = File(filePath);
+    if (!await file.exists()) {
+      throw FileSystemException('Kubeconfig file not found', filePath);
+    }
+    final content = await file.readAsString();
+    return addFromYaml(content);
+  }
+
+  static Future<KubeConfig?> autoDetectLinxrKubeconfig() async {
+    const candidatePaths = [
+      '/sdcard/Linxr/k3s.yaml',
+      '/storage/emulated/0/Linxr/k3s.yaml',
+      '/sdcard/kubeconfig',
+      '/storage/emulated/0/kubeconfig',
+      '/data/data/com.ai2th.linxr/files/k3s.yaml',
+    ];
+
+    for (final path in candidatePaths) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          final content = await file.readAsString();
+          return await addFromYaml(content);
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
   static Future<KubeConfig> addFromYaml(String yamlString) async {
     try {
       final doc = loadYaml(yamlString);
       if (doc is! Map) {
-        throw FormatException('Kubeconfig must be a YAML mapping');
+        throw const FormatException('Kubeconfig must be a YAML mapping');
       }
 
       String clusterName = 'Imported Cluster';
       String serverUrl = 'https://127.0.0.1:6443';
       String? token;
       String? caCert;
+      String? clientCert;
+      String? clientKey;
       String defaultNs = 'default';
+      bool skipTls = true;
 
       // Find current-context
       final currentContext = doc['current-context']?.toString();
@@ -113,7 +154,7 @@ class KubeConfig {
         defaultNs = activeContextMap!['namespace'].toString();
       }
 
-      // Find cluster server
+      // Find cluster server & CA
       if (doc['clusters'] is List) {
         for (final c in doc['clusters'] as List) {
           if (c is Map) {
@@ -123,6 +164,18 @@ class KubeConfig {
               if (cMap != null) {
                 serverUrl = cMap['server']?.toString() ?? serverUrl;
                 caCert = cMap['certificate-authority-data']?.toString();
+                if (caCert == null && cMap['certificate-authority'] != null) {
+                  final caPath = cMap['certificate-authority'].toString();
+                  try {
+                    final caFile = File(caPath);
+                    if (caFile.existsSync()) {
+                      caCert = caFile.readAsStringSync();
+                    }
+                  } catch (_) {}
+                }
+                if (cMap['insecure-skip-tls-verify'] == true) {
+                  skipTls = true;
+                }
                 if (targetClusterName != null) break;
               }
             }
@@ -130,7 +183,7 @@ class KubeConfig {
         }
       }
 
-      // Find user token
+      // Find user credentials (token, client certificate, client key)
       if (doc['users'] is List) {
         for (final u in doc['users'] as List) {
           if (u is Map) {
@@ -139,9 +192,25 @@ class KubeConfig {
             if (targetUserName == null || uName == targetUserName) {
               if (uMap != null) {
                 token = uMap['token']?.toString();
-                if (token == null && uMap['client-certificate-data'] != null) {
-                  token = uMap['client-certificate-data']?.toString();
+                clientCert = uMap['client-certificate-data']?.toString();
+                clientKey = uMap['client-key-data']?.toString();
+
+                if (clientCert == null && uMap['client-certificate'] != null) {
+                  final certPath = uMap['client-certificate'].toString();
+                  try {
+                    final certFile = File(certPath);
+                    if (certFile.existsSync()) clientCert = certFile.readAsStringSync();
+                  } catch (_) {}
                 }
+
+                if (clientKey == null && uMap['client-key'] != null) {
+                  final keyPath = uMap['client-key'].toString();
+                  try {
+                    final keyFile = File(keyPath);
+                    if (keyFile.existsSync()) clientKey = keyFile.readAsStringSync();
+                  } catch (_) {}
+                }
+
                 if (targetUserName != null) break;
               }
             }
@@ -154,8 +223,10 @@ class KubeConfig {
         server: serverUrl,
         token: token,
         caCert: caCert,
+        clientCertData: clientCert,
+        clientKeyData: clientKey,
         defaultNamespace: defaultNs,
-        insecureSkipTlsVerify: true,
+        insecureSkipTlsVerify: skipTls,
       );
 
       await saveConfig(config);
@@ -179,7 +250,7 @@ class KubeConfig {
     }
 
     // Always ensure the local Linxr / Kubxr cluster is available
-    final hasLocal = configs.any((c) => c.server.contains('127.0.0.1:6443'));
+    final hasLocal = configs.any((c) => c.server.contains('127.0.0.1:6443') || c.name.contains('Linxr'));
     if (!hasLocal) {
       configs.insert(0, KubeConfig(
         name: 'Linxr Local Cluster',

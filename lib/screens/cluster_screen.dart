@@ -102,9 +102,9 @@ class ClusterScreen extends StatelessWidget {
           style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey),
         ),
         const SizedBox(height: 8),
-        Card(
+        const Card(
           child: Column(
-            children: const [
+            children: [
               ListTile(
                 leading: Icon(Icons.architecture, color: Colors.blueAccent),
                 title: Text('Architecture & Runtime'),

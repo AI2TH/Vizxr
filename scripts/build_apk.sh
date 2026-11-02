@@ -53,6 +53,7 @@ cp -r /src/lib/. lib/
 cp /src/pubspec.yaml pubspec.yaml
 cp /src/android/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 [ -d /src/assets ] && cp -r /src/assets/. assets/ || true
+[ -d /src/test ] && cp -r /src/test/. test/ || true
 
 echo "--- Step 2b: Fix Gradle wrapper to 8.11.1 ---"
 sed -i "s|distributionUrl=.*|distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-bin.zip|" \

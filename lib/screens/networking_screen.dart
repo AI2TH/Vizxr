@@ -7,16 +7,16 @@ class NetworkingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
+    return const DefaultTabController(
       length: 2,
       child: Scaffold(
-        appBar: const TabBar(
+        appBar: TabBar(
           tabs: [
             Tab(text: 'Services'),
             Tab(text: 'Ingresses'),
           ],
         ),
-        body: const TabBarView(
+        body: TabBarView(
           children: [
             ResourceListView(type: K8sResourceType.service),
             ResourceListView(type: K8sResourceType.ingress),

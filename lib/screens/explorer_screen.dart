@@ -113,8 +113,8 @@ class PodDetailScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.code),
             tooltip: 'YAML',
-            onPressed: () {
-              Navigator.push(
+            onPressed: () async {
+              final modified = await Navigator.push<bool>(
                 context,
                 MaterialPageRoute(
                   builder: (context) => YamlEditorScreen(
@@ -123,29 +123,50 @@ class PodDetailScreen extends StatelessWidget {
                   ),
                 ),
               );
+              if (modified == true && context.mounted) {
+                Navigator.pop(context);
+              }
             },
           ),
           IconButton(
             icon: const Icon(Icons.delete, color: Colors.redAccent),
             tooltip: 'Delete Pod',
             onPressed: () async {
+              bool force = false;
               final confirmed = await showDialog<bool>(
                 context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Delete Pod?'),
-                  content: Text('Are you sure you want to terminate pod "${pod.name}"?'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('CANCEL')),
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text('DELETE', style: TextStyle(color: Colors.redAccent)),
+                builder: (ctx) => StatefulBuilder(
+                  builder: (ctx, setDialogState) => AlertDialog(
+                    title: const Text('Delete Pod?'),
+                    content: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Are you sure you want to terminate pod "${pod.name}"?'),
+                        const SizedBox(height: 12),
+                        CheckboxListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          title: const Text('Force delete (grace period = 0)', style: TextStyle(fontSize: 13)),
+                          value: force,
+                          onChanged: (val) => setDialogState(() => force = val ?? false),
+                        ),
+                      ],
                     ),
-                  ],
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('CANCEL')),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('DELETE', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
                 ),
               );
 
               if (confirmed == true) {
-                await client.deleteResource(K8sResourceType.pod, pod.name, pod.namespace);
+                await client.deleteResource(K8sResourceType.pod, pod.name, pod.namespace, force: force);
+                if (!context.mounted) return;
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(content: Text('Pod ${pod.name} terminated')),
@@ -185,6 +206,20 @@ class PodDetailScreen extends StatelessWidget {
                   _buildDetailRow('Pod IP', pod.ip ?? 'Pending / None'),
                   _buildDetailRow('Node', pod.nodeName ?? 'linxr-master'),
                   _buildDetailRow('Restarts', '${pod.restarts}'),
+                  if (pod.containers.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Text('Containers', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      children: pod.containers.map((c) => Chip(
+                        label: Text(c, style: const TextStyle(fontSize: 11)),
+                        backgroundColor: Colors.blueAccent.withOpacity(0.15),
+                        padding: EdgeInsets.zero,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      )).toList(),
+                    ),
+                  ],
                 ],
               ),
             ),

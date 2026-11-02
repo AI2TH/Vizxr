@@ -13,9 +13,12 @@ class AddClusterScreen extends StatefulWidget {
 class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final TextEditingController _yamlController = TextEditingController();
+  final TextEditingController _pathController = TextEditingController(text: '/sdcard/Linxr/k3s.yaml');
   final TextEditingController _nameController = TextEditingController(text: 'My K8s Cluster');
   final TextEditingController _serverController = TextEditingController(text: 'https://127.0.0.1:6443');
   final TextEditingController _tokenController = TextEditingController();
+  final TextEditingController _clientCertController = TextEditingController();
+  final TextEditingController _clientKeyController = TextEditingController();
   bool _insecure = true;
   bool _isLoading = false;
 
@@ -23,6 +26,19 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _yamlController.dispose();
+    _pathController.dispose();
+    _nameController.dispose();
+    _serverController.dispose();
+    _tokenController.dispose();
+    _clientCertController.dispose();
+    _clientKeyController.dispose();
+    super.dispose();
   }
 
   @override
@@ -35,7 +51,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
           tabs: const [
             Tab(text: 'Presets'),
             Tab(text: 'Kubeconfig'),
-            Tab(text: 'Manual'),
+            Tab(text: 'Manual / mTLS'),
           ],
         ),
       ),
@@ -62,12 +78,41 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
         ),
         const SizedBox(height: 8),
         const Text(
-          'Connect immediately to local mobile Kubernetes runtimes without manual configuration.',
+          'Connect immediately to local mobile Kubernetes runtimes or development workstations.',
           style: TextStyle(fontSize: 13, color: Colors.grey),
         ),
         const SizedBox(height: 16),
         _buildPresetCard(
-          title: 'Linxr / Kubxr Local Node',
+          title: 'Auto-Detect Linxr / K3s Node',
+          subtitle: 'Scan /sdcard/Linxr/k3s.yaml and shared storage',
+          icon: Icons.auto_awesome,
+          color: Colors.amberAccent,
+          onTap: () async {
+            setState(() => _isLoading = true);
+            final detected = await KubeConfig.autoDetectLinxrKubeconfig();
+            if (!mounted) return;
+            setState(() => _isLoading = false);
+
+            if (detected != null) {
+              await _saveAndFinish(detected);
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('No exported k3s.yaml found on storage. Using default 127.0.0.1:6443.'),
+                ),
+              );
+              final fallback = KubeConfig(
+                name: 'Linxr Local Cluster',
+                server: 'https://127.0.0.1:6443',
+                insecureSkipTlsVerify: true,
+              );
+              await _saveAndFinish(fallback);
+            }
+          },
+        ),
+        const SizedBox(height: 12),
+        _buildPresetCard(
+          title: 'Linxr / Kubxr Local Loopback',
           subtitle: 'https://127.0.0.1:6443 (On-Device Mobile VM)',
           icon: Icons.smartphone_rounded,
           color: Colors.blueAccent,
@@ -82,7 +127,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
         ),
         const SizedBox(height: 12),
         _buildPresetCard(
-          title: 'Android Emulator Loopback',
+          title: 'Android Host Loopback',
           subtitle: 'https://10.0.2.2:6443 (Host machine cluster)',
           icon: Icons.laptop_chromebook,
           color: Colors.purpleAccent,
@@ -98,7 +143,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
         const SizedBox(height: 12),
         _buildPresetCard(
           title: 'Demo Simulator Cluster',
-          subtitle: 'Simulated multi-node Lens experience (offline ready)',
+          subtitle: 'Multi-node Lens simulation with interactive pods & logs',
           icon: Icons.model_training,
           color: Colors.tealAccent,
           onTap: () async {
@@ -139,16 +184,46 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
-            'Paste your Kubeconfig (YAML)',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _pathController,
+                  decoration: const InputDecoration(
+                    labelText: 'Load from File Path (optional)',
+                    hintText: '/sdcard/Linxr/k3s.yaml',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: () async {
+                  final path = _pathController.text.trim();
+                  if (path.isEmpty) return;
+                  setState(() => _isLoading = true);
+                  try {
+                    final config = await KubeConfig.addFromFilePath(path);
+                    await _saveAndFinish(config);
+                  } catch (e) {
+                    if (!mounted) return;
+                    setState(() => _isLoading = false);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to read file: $e'), backgroundColor: Colors.redAccent),
+                    );
+                  }
+                },
+                child: const Text('LOAD FILE'),
+              ),
+            ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 14),
           const Text(
-            'Automatically extracts contexts, servers, namespaces, and auth tokens.',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+            'Or Paste Kubeconfig (YAML / JSON):',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Expanded(
             child: TextField(
               controller: _yamlController,
@@ -175,20 +250,13 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               setState(() => _isLoading = true);
               try {
                 final config = await KubeConfig.addFromYaml(text);
-                await context.read<ClusterState>().addConfig(config);
-                if (mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Cluster "${config.name}" added successfully!')),
-                  );
-                }
+                await _saveAndFinish(config);
               } catch (e) {
-                if (mounted) {
-                  setState(() => _isLoading = false);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error: $e'), backgroundColor: Colors.redAccent),
-                  );
-                }
+                if (!mounted) return;
+                setState(() => _isLoading = false);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Error: $e'), backgroundColor: Colors.redAccent),
+                );
               }
             },
             child: const Text('IMPORT KUBECONFIG', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -203,7 +271,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
       padding: const EdgeInsets.all(16.0),
       children: [
         const Text(
-          'Direct Cluster Parameters',
+          'Direct Cluster Parameters & mTLS',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 16),
@@ -226,17 +294,37 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
         const SizedBox(height: 12),
         TextField(
           controller: _tokenController,
-          maxLines: 3,
+          maxLines: 2,
           decoration: const InputDecoration(
-            labelText: 'Bearer / ServiceAccount Token (Optional)',
+            labelText: 'Bearer Token (Optional)',
             hintText: 'eyJhbGciOiJSUzI1NiIs...',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _clientCertController,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Client Certificate PEM / base64 (Optional)',
+            hintText: '-----BEGIN CERTIFICATE-----',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _clientKeyController,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Client Private Key PEM / base64 (Optional)',
+            hintText: '-----BEGIN RSA PRIVATE KEY-----',
             border: OutlineInputBorder(),
           ),
         ),
         const SizedBox(height: 12),
         SwitchListTile(
           title: const Text('Skip TLS Certificate Verification'),
-          subtitle: const Text('Recommended for self-signed development & local clusters'),
+          subtitle: const Text('Recommended for self-signed certificates and mobile local nodes'),
           value: _insecure,
           onChanged: (val) => setState(() => _insecure = val),
         ),
@@ -250,12 +338,16 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
             final name = _nameController.text.trim();
             final server = _serverController.text.trim();
             final token = _tokenController.text.trim();
+            final clientCert = _clientCertController.text.trim();
+            final clientKey = _clientKeyController.text.trim();
             if (name.isEmpty || server.isEmpty) return;
 
             final config = KubeConfig(
               name: name,
               server: server,
               token: token.isNotEmpty ? token : null,
+              clientCertData: clientCert.isNotEmpty ? clientCert : null,
+              clientKeyData: clientKey.isNotEmpty ? clientKey : null,
               insecureSkipTlsVerify: _insecure,
             );
             await _saveAndFinish(config);
@@ -268,12 +360,12 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
 
   Future<void> _saveAndFinish(KubeConfig config) async {
     setState(() => _isLoading = true);
-    await context.read<ClusterState>().addConfig(config);
-    if (mounted) {
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Connected to ${config.name}')),
-      );
-    }
+    final clusterState = context.read<ClusterState>();
+    await clusterState.addConfig(config);
+    if (!mounted) return;
+    Navigator.pop(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Connected to "${config.name}"')),
+    );
   }
 }

@@ -68,6 +68,9 @@ class ResourceCard extends StatelessWidget {
                         items.add(const PopupMenuItem(value: 'logs', child: Text('View Logs')));
                         items.add(const PopupMenuItem(value: 'exec', child: Text('Shell (Exec)')));
                       }
+                      if (resource.type == K8sResourceType.job) {
+                        items.add(const PopupMenuItem(value: 'logs', child: Text('View Logs')));
+                      }
                       if (resource.type == K8sResourceType.deployment) {
                         items.add(const PopupMenuItem(value: 'scale', child: Text('Scale Replicas')));
                         items.add(const PopupMenuItem(value: 'restart', child: Text('Restart Rollout')));
