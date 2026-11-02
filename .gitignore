@@ -2,3 +2,8 @@
 *.aab
 
 # Build artifacts
+build/
+.dart_tool/
+.gradle/
+*.iml
+.idea/

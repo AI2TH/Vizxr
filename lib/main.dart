@@ -6,7 +6,6 @@ import 'widgets/cluster_drawer.dart';
 import 'screens/workloads_screen.dart';
 import 'screens/networking_screen.dart';
 import 'screens/storage_screen.dart';
-import 'screens/add_cluster_screen.dart';
 import 'screens/events_screen.dart';
 import 'screens/config_screen.dart';
 import 'screens/cluster_screen.dart';
@@ -32,9 +31,11 @@ class K8sConsoleApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
+          seedColor: Colors.blueAccent,
           brightness: Brightness.dark,
         ),
+        scaffoldBackgroundColor: const Color(0xFF0F172A),
+        cardColor: const Color(0xFF1E293B),
         useMaterial3: true,
         textTheme: GoogleFonts.firaCodeTextTheme(
           ThemeData(brightness: Brightness.dark).textTheme,
@@ -56,8 +57,8 @@ class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 1; // Default to Workloads
 
   static const List<Widget> _screens = [
-    ClusterScreen(), // Real feature: Nodes and Cluster Overview
-    WorkloadsScreen(), // Pods, Deployments, STS
+    ClusterScreen(), // Nodes and Cluster Overview
+    WorkloadsScreen(), // Pods, Deployments, STS, DaemonSets
     ConfigScreen(), // ConfigMaps, Secrets
     NetworkingScreen(), // Services, Ingress
     StorageScreen(), // PVC, StorageClasses
@@ -66,26 +67,57 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     final clusterState = context.watch<ClusterState>();
+    final isLive = clusterState.isLiveConnected;
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: const Color(0xFF0F172A),
+        elevation: 0,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Vizxr', style: TextStyle(fontSize: 18)),
-            Text(clusterState.activeConfig?.name ?? 'Connecting...', 
-                 style: const TextStyle(fontSize: 11, color: Colors.blue, fontWeight: FontWeight.bold)),
+            const Text('Vizxr', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Row(
+              children: [
+                Icon(
+                  Icons.circle,
+                  size: 7,
+                  color: isLive ? Colors.greenAccent : Colors.orangeAccent,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  clusterState.activeConfig?.name ?? 'Connecting...',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: isLive ? Colors.greenAccent : Colors.lightBlueAccent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.notifications_outlined, size: 22),
+            tooltip: 'Cluster Events',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const EventsScreen()),
+              );
+            },
+          ),
           DropdownButton<String>(
-            value: clusterState.currentNamespace,
+            value: clusterState.namespaces.contains(clusterState.currentNamespace)
+                ? clusterState.currentNamespace
+                : (clusterState.namespaces.isNotEmpty ? clusterState.namespaces.first : 'all-namespaces'),
             underline: const SizedBox(),
             icon: const Icon(Icons.filter_list, size: 20),
             items: clusterState.namespaces.map((String ns) {
               return DropdownMenuItem<String>(
                 value: ns,
-                child: Text(ns, style: const TextStyle(fontSize: 13)),
+                child: Text(ns, style: const TextStyle(fontSize: 12)),
               );
             }).toList(),
             onChanged: (String? newValue) {
@@ -94,7 +126,7 @@ class _MainScreenState extends State<MainScreen> {
               }
             },
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
         ],
       ),
       drawer: const ClusterDrawer(),
@@ -104,6 +136,8 @@ class _MainScreenState extends State<MainScreen> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
+        backgroundColor: const Color(0xFF0F172A),
+        indicatorColor: Colors.blueAccent.withOpacity(0.2),
         height: 65,
         onDestinationSelected: (int index) {
           setState(() {
