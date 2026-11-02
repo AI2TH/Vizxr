@@ -7,19 +7,17 @@ class StorageScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
+    return const DefaultTabController(
+      length: 1,
       child: Scaffold(
-        appBar: const TabBar(
+        appBar: TabBar(
           tabs: [
             Tab(text: 'PersistentVolumeClaims'),
-            Tab(text: 'StorageClasses'),
           ],
         ),
-        body: const TabBarView(
+        body: TabBarView(
           children: [
             ResourceListView(type: K8sResourceType.persistentVolumeClaim),
-            Center(child: Text('Storage Classes (Standard, Fast)')),
           ],
         ),
       ),

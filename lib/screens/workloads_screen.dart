@@ -15,7 +15,7 @@ class WorkloadsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      length: 6,
       initialIndex: 1, // Default to Pods
       child: Scaffold(
         appBar: const TabBar(
@@ -26,6 +26,7 @@ class WorkloadsScreen extends StatelessWidget {
             Tab(text: 'Deployments'),
             Tab(text: 'StatefulSets'),
             Tab(text: 'DaemonSets'),
+            Tab(text: 'Jobs'),
           ],
         ),
         body: const TabBarView(
@@ -35,6 +36,7 @@ class WorkloadsScreen extends StatelessWidget {
             ResourceListView(type: K8sResourceType.deployment),
             ResourceListView(type: K8sResourceType.statefulSet),
             ResourceListView(type: K8sResourceType.daemonSet),
+            ResourceListView(type: K8sResourceType.job),
           ],
         ),
         floatingActionButton: FloatingActionButton.extended(
@@ -73,7 +75,8 @@ class WorkloadOverviewTab extends StatelessWidget {
       future: Future.wait([
         client.fetchResources(K8sResourceType.pod, namespace: ns),
         client.fetchResources(K8sResourceType.deployment, namespace: ns),
-      ]).then((lists) => [...lists[0], ...lists[1]]),
+        client.fetchResources(K8sResourceType.job, namespace: ns),
+      ]).then((lists) => [...lists[0], ...lists[1], ...lists[2]]),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -82,6 +85,7 @@ class WorkloadOverviewTab extends StatelessWidget {
         final all = snapshot.data ?? [];
         final pods = all.where((r) => r.type == K8sResourceType.pod).toList();
         final deps = all.where((r) => r.type == K8sResourceType.deployment).toList();
+        final jobs = all.where((r) => r.type == K8sResourceType.job).toList();
 
         final runningPods = pods.where((p) => p.status.toLowerCase().contains('running')).length;
         final pendingPods = pods.where((p) => p.status.toLowerCase().contains('pending')).length;
@@ -97,7 +101,23 @@ class WorkloadOverviewTab extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Pod Status Summary', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Pod Status Summary', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.blueAccent.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            ns,
+                            style: const TextStyle(fontSize: 11, color: Colors.lightBlueAccent, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 12),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -123,20 +143,48 @@ class WorkloadOverviewTab extends StatelessWidget {
                     const Text('Deployments', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
                     Text(
-                      '${deps.length} active deployments in namespace "${ns}"',
+                      '${deps.length} active deployments in namespace "$ns"',
                       style: const TextStyle(fontSize: 13, color: Colors.grey),
                     ),
                     const SizedBox(height: 12),
-                    ...deps.map((d) => ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: const Icon(Icons.rocket_launch, color: Colors.blueAccent),
-                          title: Text(d.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                          trailing: Text(d.status, style: const TextStyle(color: Colors.greenAccent, fontSize: 12)),
-                        )),
+                    if (deps.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8.0),
+                        child: Text('No deployments in this namespace.', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      )
+                    else
+                      ...deps.map((d) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.rocket_launch, color: Colors.blueAccent),
+                            title: Text(d.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            trailing: Text(d.status, style: const TextStyle(color: Colors.greenAccent, fontSize: 12)),
+                          )),
                   ],
                 ),
               ),
             ),
+            if (jobs.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Batch Jobs', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      ...jobs.map((j) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.task_alt, color: Colors.tealAccent),
+                            title: Text(j.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            trailing: Text(j.status, style: const TextStyle(color: Colors.tealAccent, fontSize: 12)),
+                          )),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ],
         );
       },
@@ -238,14 +286,24 @@ class _ResourceListViewState extends State<ResourceListView> {
                     final res = resources[index];
                     return ResourceCard(
                       resource: res,
-                      onTap: () {
+                      onTap: () async {
                         if (res.type == K8sResourceType.pod) {
-                          Navigator.push(
+                          await Navigator.push(
                             context,
                             MaterialPageRoute(builder: (context) => PodDetailScreen(pod: res)),
                           );
+                          _refresh();
                         } else {
-                          _showYamlViewer(res);
+                          final modified = await Navigator.push<bool>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => YamlEditorScreen(
+                                resourceName: res.name,
+                                initialYaml: const JsonEncoder.withIndent('  ').convert(res.rawYaml),
+                              ),
+                            ),
+                          );
+                          if (modified == true) _refresh();
                         }
                       },
                       onAction: (action) async {
@@ -269,14 +327,25 @@ class _ResourceListViewState extends State<ResourceListView> {
                             _showScaleDialog(res, client);
                             break;
                           case 'restart':
+                            final messenger = ScaffoldMessenger.of(context);
                             await client.restartDeployment(res.name, res.namespace);
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            if (!mounted) return;
+                            messenger.showSnackBar(
                               SnackBar(content: Text('Rollout restart initiated for ${res.name}')),
                             );
                             _refresh();
                             break;
                           case 'yaml':
-                            _showYamlViewer(res);
+                            final modified = await Navigator.push<bool>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => YamlEditorScreen(
+                                  resourceName: res.name,
+                                  initialYaml: const JsonEncoder.withIndent('  ').convert(res.rawYaml),
+                                ),
+                              ),
+                            );
+                            if (modified == true) _refresh();
                             break;
                         }
                       },
@@ -291,38 +360,45 @@ class _ResourceListViewState extends State<ResourceListView> {
     );
   }
 
-  void _showYamlViewer(K8sResource res) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => YamlEditorScreen(
-          resourceName: res.name,
-          initialYaml: const JsonEncoder.withIndent('  ').convert(res.rawYaml),
-        ),
-      ),
-    );
-  }
-
   Future<void> _confirmDelete(K8sResource res, K8sClientService client) async {
+    bool forceDelete = false;
+
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete Resource?'),
-        content: Text('Are you sure you want to delete ${res.type.name} "${res.name}" in namespace "${res.namespace}"? This action is immediate.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('CANCEL')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('DELETE', style: TextStyle(color: Colors.redAccent)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Delete ${res.type.name}?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Are you sure you want to delete ${res.type.name} "${res.name}" in namespace "${res.namespace}"?'),
+              const SizedBox(height: 14),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('Force delete (grace period = 0)', style: TextStyle(fontSize: 13)),
+                value: forceDelete,
+                onChanged: (val) => setDialogState(() => forceDelete = val ?? false),
+              ),
+            ],
           ),
-        ],
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('CANCEL')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('DELETE', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
       ),
     );
 
     if (confirmed == true) {
-      await client.deleteResource(res.type, res.name, res.namespace);
+      await client.deleteResource(res.type, res.name, res.namespace, force: forceDelete);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Deleted ${res.name}')),
+        SnackBar(content: Text('Deleted ${res.type.name} "${res.name}"')),
       );
       _refresh();
     }
@@ -366,6 +442,7 @@ class _ResourceListViewState extends State<ResourceListView> {
 
     if (newReplicas != null) {
       await client.scaleDeployment(res.name, res.namespace, newReplicas);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Deployment ${res.name} scaled to $newReplicas replicas')),
       );
@@ -383,9 +460,16 @@ class CreateWorkloadSheet extends StatefulWidget {
 
 class _CreateWorkloadSheetState extends State<CreateWorkloadSheet> with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  final _nameController = TextEditingController(text: 'my-app');
-  final _imageController = TextEditingController(text: 'nginx:alpine');
-  final _portController = TextEditingController(text: '80');
+  final _podNameController = TextEditingController(text: 'my-app');
+  final _podImageController = TextEditingController(text: 'nginx:alpine');
+  final _podPortController = TextEditingController(text: '80');
+  final _podEnvController = TextEditingController(text: 'PORT=80');
+
+  final _depNameController = TextEditingController(text: 'web-service');
+  final _depImageController = TextEditingController(text: 'redis:alpine');
+  final _depPortController = TextEditingController(text: '6379');
+  int _depReplicas = 2;
+
   final _yamlController = TextEditingController(text: '''apiVersion: v1
 kind: Pod
 metadata:
@@ -402,7 +486,17 @@ spec:
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
+  }
+
+  void _applyTemplate(String title, String yaml) {
+    setState(() {
+      _yamlController.text = yaml;
+      _tabController.animateTo(3); // Switch to Raw Manifest Tab
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Loaded "$title" template into Manifest Editor')),
+    );
   }
 
   @override
@@ -423,21 +517,24 @@ spec:
         children: [
           Row(
             children: [
-              const Text('Create Workload', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const Text('Create Kubernetes Resource', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const Spacer(),
               IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
             ],
           ),
           TabBar(
             controller: _tabController,
+            isScrollable: true,
             tabs: const [
               Tab(text: 'Quick Pod'),
+              Tab(text: 'Quick Deployment'),
+              Tab(text: 'Templates'),
               Tab(text: 'Raw Manifest (YAML)'),
             ],
           ),
           const SizedBox(height: 12),
           SizedBox(
-            height: 280,
+            height: 320,
             child: TabBarView(
               controller: _tabController,
               children: [
@@ -445,24 +542,159 @@ spec:
                 ListView(
                   children: [
                     TextField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(labelText: 'Pod / Workload Name', isDense: true),
+                      controller: _podNameController,
+                      decoration: const InputDecoration(labelText: 'Pod Name', isDense: true),
                     ),
                     const SizedBox(height: 10),
                     TextField(
-                      controller: _imageController,
-                      decoration: const InputDecoration(labelText: 'Container Image (e.g. redis:alpine, nginx:alpine)', isDense: true),
+                      controller: _podImageController,
+                      decoration: const InputDecoration(labelText: 'Container Image', isDense: true),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      children: [
+                        _buildImageChip('nginx:alpine', _podImageController),
+                        _buildImageChip('redis:alpine', _podImageController),
+                        _buildImageChip('busybox', _podImageController),
+                        _buildImageChip('python:3.11-alpine', _podImageController),
+                      ],
                     ),
                     const SizedBox(height: 10),
                     TextField(
-                      controller: _portController,
+                      controller: _podPortController,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Port (e.g. 80, 6379, 8080)', isDense: true),
+                      decoration: const InputDecoration(labelText: 'Port (optional)', isDense: true),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _podEnvController,
+                      decoration: const InputDecoration(labelText: 'Env (KEY=VAL, comma separated)', isDense: true),
                     ),
                     const SizedBox(height: 8),
                     Text('Target Namespace: $ns', style: const TextStyle(fontSize: 12, color: Colors.blueAccent)),
                   ],
                 ),
+
+                // Quick Deployment form
+                ListView(
+                  children: [
+                    TextField(
+                      controller: _depNameController,
+                      decoration: const InputDecoration(labelText: 'Deployment Name', isDense: true),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _depImageController,
+                      decoration: const InputDecoration(labelText: 'Container Image', isDense: true),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Text('Replicas:', style: TextStyle(fontSize: 14)),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle_outline),
+                          onPressed: _depReplicas > 1 ? () => setState(() => _depReplicas--) : null,
+                        ),
+                        Text('$_depReplicas', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        IconButton(
+                          icon: const Icon(Icons.add_circle_outline),
+                          onPressed: () => setState(() => _depReplicas++),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _depPortController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Container Port', isDense: true),
+                    ),
+                  ],
+                ),
+
+                // Templates List
+                ListView(
+                  children: [
+                    _buildTemplateItem(
+                      'Nginx Web Server',
+                      'Lightweight HTTP server on port 80',
+                      Icons.language,
+                      '''apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-web
+  namespace: default
+spec:
+  containers:
+  - name: nginx
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+''',
+                    ),
+                    _buildTemplateItem(
+                      'Redis Cache Pod',
+                      'In-memory key-value data store on port 6379',
+                      Icons.memory,
+                      '''apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-cache
+  namespace: default
+spec:
+  containers:
+  - name: redis
+    image: redis:7.2-alpine
+    ports:
+    - containerPort: 6379
+''',
+                    ),
+                    _buildTemplateItem(
+                      'Busybox Debug Pod',
+                      'Utility pod with sleep loop for kubectl exec testing',
+                      Icons.bug_report,
+                      '''apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-busybox
+  namespace: default
+spec:
+  containers:
+  - name: busybox
+    image: busybox:latest
+    command: ["sleep", "3600"]
+''',
+                    ),
+                    _buildTemplateItem(
+                      'Echo HTTP Server',
+                      'Returns request headers & body on port 8080',
+                      Icons.repeat,
+                      '''apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-server
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+      - name: echo
+        image: ealen/echo-server:latest
+        ports:
+        - containerPort: 80
+''',
+                    ),
+                  ],
+                ),
+
                 // Raw YAML form
                 TextField(
                   controller: _yamlController,
@@ -473,6 +705,7 @@ spec:
                     border: OutlineInputBorder(),
                     filled: true,
                     fillColor: Color(0xFF0F172A),
+                    hintText: 'Paste Kubernetes YAML or JSON manifest here...',
                   ),
                 ),
               ],
@@ -486,35 +719,98 @@ spec:
             ),
             onPressed: () async {
               final client = clusterState.client;
+              final messenger = ScaffoldMessenger.of(context);
+              final navigator = Navigator.of(context);
+
               if (_tabController.index == 0) {
                 // Quick Pod
-                final name = _nameController.text.trim();
-                final image = _imageController.text.trim();
-                final port = int.tryParse(_portController.text.trim());
+                final name = _podNameController.text.trim();
+                final image = _podImageController.text.trim();
+                final port = int.tryParse(_podPortController.text.trim());
+                final envMap = <String, String>{};
+                final envText = _podEnvController.text.trim();
+                if (envText.isNotEmpty) {
+                  for (final item in envText.split(',')) {
+                    final parts = item.split('=');
+                    if (parts.length == 2) {
+                      envMap[parts[0].trim()] = parts[1].trim();
+                    }
+                  }
+                }
+
                 if (name.isNotEmpty && image.isNotEmpty) {
                   await client.createPod(
                     name: name,
                     namespace: ns,
                     image: image,
                     port: port,
+                    env: envMap.isNotEmpty ? envMap : null,
                   );
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  if (!mounted) return;
+                  navigator.pop();
+                  messenger.showSnackBar(
                     SnackBar(content: Text('Pod "$name" created in namespace "$ns"!')),
                   );
                 }
+              } else if (_tabController.index == 1) {
+                // Quick Deployment
+                final name = _depNameController.text.trim();
+                final image = _depImageController.text.trim();
+                final port = int.tryParse(_depPortController.text.trim());
+                if (name.isNotEmpty && image.isNotEmpty) {
+                  await client.createDeployment(
+                    name: name,
+                    namespace: ns,
+                    image: image,
+                    replicas: _depReplicas,
+                    port: port,
+                  );
+                  if (!mounted) return;
+                  navigator.pop();
+                  messenger.showSnackBar(
+                    SnackBar(content: Text('Deployment "$name" created with $_depReplicas replicas!')),
+                  );
+                }
               } else {
-                // Raw YAML
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Manifest applied successfully')),
-                );
+                // Raw YAML / Selected Template
+                final manifestText = _yamlController.text.trim();
+                if (manifestText.isNotEmpty) {
+                  final result = await client.applyManifest(manifestText, targetNamespace: ns);
+                  if (!mounted) return;
+                  navigator.pop();
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(result.message),
+                      backgroundColor: result.success ? Colors.green[800] : Colors.red[800],
+                    ),
+                  );
+                }
               }
             },
-            child: const Text('CREATE RESOURCE', style: TextStyle(fontWeight: FontWeight.bold)),
+            child: const Text('CREATE / APPLY RESOURCE', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
           const SizedBox(height: 16),
         ],
+      ),
+    );
+  }
+
+  Widget _buildImageChip(String tag, TextEditingController controller) {
+    return ActionChip(
+      label: Text(tag, style: const TextStyle(fontSize: 11)),
+      onPressed: () => setState(() => controller.text = tag),
+    );
+  }
+
+  Widget _buildTemplateItem(String title, String desc, IconData icon, String yaml) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: Icon(icon, color: Colors.blueAccent),
+        title: Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+        subtitle: Text(desc, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        trailing: const Icon(Icons.arrow_forward_ios, size: 14),
+        onTap: () => _applyTemplate(title, yaml),
       ),
     );
   }

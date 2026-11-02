@@ -18,8 +18,12 @@ class ClusterState extends ChangeNotifier {
   bool get isLiveConnected => _isLiveConnected;
 
   ClusterState() {
-    _activeClient = K8sClientService(baseUrl: 'https://127.0.0.1:6443');
+    _initDefaultClient();
     refreshConfigs();
+  }
+
+  void _initDefaultClient() {
+    _activeClient = K8sClientService(baseUrl: 'https://127.0.0.1:6443');
   }
 
   Future<void> refreshConfigs() async {
@@ -37,10 +41,17 @@ class ClusterState extends ChangeNotifier {
   void _initClient() {
     final server = _activeConfig?.server ?? 'https://127.0.0.1:6443';
     final token = _activeConfig?.token;
+    final caCert = _activeConfig?.caCert;
+    final clientCert = _activeConfig?.clientCertData;
+    final clientKey = _activeConfig?.clientKeyData;
     final insecure = _activeConfig?.insecureSkipTlsVerify ?? true;
+
     _activeClient = K8sClientService(
       baseUrl: server,
       token: token,
+      caCertData: caCert,
+      clientCertData: clientCert,
+      clientKeyData: clientKey,
       insecureSkipTlsVerify: insecure,
     );
   }
@@ -83,5 +94,15 @@ class ClusterState extends ChangeNotifier {
       _activeConfig = null;
     }
     await refreshConfigs();
+  }
+
+  Future<ManifestApplyResult> applyManifest(String yamlOrJson) async {
+    final result = await _activeClient.applyManifest(yamlOrJson, targetNamespace: _currentNamespace);
+    notifyListeners();
+    return result;
+  }
+
+  void triggerReload() {
+    notifyListeners();
   }
 }
