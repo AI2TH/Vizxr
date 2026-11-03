@@ -116,6 +116,27 @@ class K8sClientService {
   final bool insecureSkipTlsVerify;
 
   HttpClient? _httpClient;
+  String? _workingBaseUrl;
+
+  String get effectiveBaseUrl => _workingBaseUrl ?? baseUrl;
+
+  List<String> get _candidateBaseUrls {
+    final list = <String>[];
+    if (_workingBaseUrl != null) {
+      list.add(_workingBaseUrl!);
+    }
+    if (!list.contains(baseUrl)) {
+      list.add(baseUrl);
+    }
+    if (baseUrl.contains('172.16.0.2')) {
+      final loopback = baseUrl.replaceAll('172.16.0.2', '127.0.0.1');
+      if (!list.contains(loopback)) list.add(loopback);
+    } else if (baseUrl.contains('127.0.0.1')) {
+      final vm = baseUrl.replaceAll('127.0.0.1', '172.16.0.2');
+      if (!list.contains(vm)) list.add(vm);
+    }
+    return list;
+  }
 
   K8sClientService({
     required this.baseUrl,
@@ -621,23 +642,34 @@ class K8sClientService {
   ];
 
   Future<dynamic> _request(String method, String endpoint, {dynamic body}) async {
-    final uri = Uri.parse('$baseUrl$endpoint');
-    final req = await _httpClient!.openUrl(method, uri).timeout(const Duration(seconds: 4));
-    req.headers.set('Accept', 'application/json');
-    if (token != null && token!.isNotEmpty) {
-      req.headers.set('Authorization', 'Bearer $token');
+    dynamic lastError;
+    final candidates = _candidateBaseUrls;
+
+    for (final base in candidates) {
+      try {
+        final uri = Uri.parse('$base$endpoint');
+        final req = await _httpClient!.openUrl(method, uri).timeout(const Duration(seconds: 3));
+        req.headers.set('Accept', 'application/json');
+        if (token != null && token!.isNotEmpty) {
+          req.headers.set('Authorization', 'Bearer $token');
+        }
+        if (body != null) {
+          req.headers.set('Content-Type', 'application/json');
+          req.add(utf8.encode(jsonEncode(body)));
+        }
+        final resp = await req.close().timeout(const Duration(seconds: 3));
+        final respBody = await resp.transform(utf8.decoder).join();
+        if (resp.statusCode >= 200 && resp.statusCode < 300) {
+          _workingBaseUrl = base;
+          if (respBody.trim().isEmpty) return {};
+          return jsonDecode(respBody);
+        }
+        throw HttpException('HTTP ${resp.statusCode}: $respBody', uri: uri);
+      } catch (e) {
+        lastError = e;
+      }
     }
-    if (body != null) {
-      req.headers.set('Content-Type', 'application/json');
-      req.add(utf8.encode(jsonEncode(body)));
-    }
-    final resp = await req.close().timeout(const Duration(seconds: 4));
-    final respBody = await resp.transform(utf8.decoder).join();
-    if (resp.statusCode >= 200 && resp.statusCode < 300) {
-      if (respBody.trim().isEmpty) return {};
-      return jsonDecode(respBody);
-    }
-    throw HttpException('HTTP ${resp.statusCode}: $respBody', uri: uri);
+    throw lastError ?? Exception('Failed request to $endpoint across $candidates');
   }
 
   Future<bool> testConnection() async {
@@ -1265,7 +1297,7 @@ class K8sClientService {
         if (previous) 'previous=true',
       ];
       final query = '?${queryParams.join('&')}';
-      final uri = Uri.parse('$baseUrl/api/v1/namespaces/$namespace/pods/$name/log$query');
+      final uri = Uri.parse('$effectiveBaseUrl/api/v1/namespaces/$namespace/pods/$name/log$query');
       final req = await _httpClient!.openUrl('GET', uri).timeout(const Duration(seconds: 5));
       if (token != null && token!.isNotEmpty) req.headers.set('Authorization', 'Bearer $token');
       final resp = await req.close();
@@ -1305,7 +1337,7 @@ class K8sClientService {
         'timestamps=true',
         if (container != null) 'container=$container',
       ];
-      final uri = Uri.parse('$baseUrl/api/v1/namespaces/$namespace/pods/$podName/log?${queryParams.join('&')}');
+      final uri = Uri.parse('$effectiveBaseUrl/api/v1/namespaces/$namespace/pods/$podName/log?${queryParams.join('&')}');
       final req = await _httpClient!.openUrl('GET', uri);
       if (token != null && token!.isNotEmpty) req.headers.set('Authorization', 'Bearer $token');
       final resp = await req.close();

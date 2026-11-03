@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/kubeconfig.dart';
@@ -82,6 +83,26 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
           style: TextStyle(fontSize: 13, color: Colors.grey),
         ),
         const SizedBox(height: 16),
+        _buildPresetCard(
+          title: 'User Test Cluster (kubernetes-admin@kubernetes)',
+          subtitle: 'https://172.16.0.2:6443 (mTLS credentials with loopback fallback)',
+          icon: Icons.security_rounded,
+          color: Colors.greenAccent,
+          onTap: () async {
+            setState(() => _isLoading = true);
+            try {
+              final config = await KubeConfig.addFromYaml(KubeConfig.testKubeconfigYaml);
+              await _saveAndFinish(config);
+            } catch (e) {
+              if (!mounted) return;
+              setState(() => _isLoading = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Failed to load test cluster: $e'), backgroundColor: Colors.redAccent),
+              );
+            }
+          },
+        ),
+        const SizedBox(height: 12),
         _buildPresetCard(
           title: 'Auto-Detect Linxr / K3s Node',
           subtitle: 'Scan /sdcard/Linxr/k3s.yaml and shared storage',
@@ -218,10 +239,81 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               ),
             ],
           ),
-          const SizedBox(height: 14),
-          const Text(
-            'Or Paste Kubeconfig (YAML / JSON):',
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
+          const SizedBox(height: 6),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.description, size: 14),
+                  label: const Text('test_kubeconfig.yaml', style: TextStyle(fontSize: 11)),
+                  onPressed: () {
+                    _pathController.text = '/sdcard/Download/test_kubeconfig.yaml';
+                  },
+                ),
+                const SizedBox(width: 8),
+                ActionChip(
+                  avatar: const Icon(Icons.folder, size: 14),
+                  label: const Text('Linxr k3s.yaml', style: TextStyle(fontSize: 11)),
+                  onPressed: () {
+                    _pathController.text = '/sdcard/Linxr/k3s.yaml';
+                  },
+                ),
+                const SizedBox(width: 8),
+                ActionChip(
+                  avatar: const Icon(Icons.file_present, size: 14),
+                  label: const Text('/sdcard/kubeconfig', style: TextStyle(fontSize: 11)),
+                  onPressed: () {
+                    _pathController.text = '/sdcard/kubeconfig';
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Or Paste Kubeconfig (YAML / JSON):',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
+              ),
+              Row(
+                children: [
+                  TextButton.icon(
+                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+                    icon: const Icon(Icons.content_paste, size: 16),
+                    label: const Text('Paste', style: TextStyle(fontSize: 12)),
+                    onPressed: () async {
+                      final data = await Clipboard.getData('text/plain');
+                      if (data?.text != null && data!.text!.isNotEmpty) {
+                        setState(() {
+                          _yamlController.text = data.text!;
+                        });
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Pasted from clipboard!')),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+                    icon: const Icon(Icons.play_circle_fill, size: 16, color: Colors.amberAccent),
+                    label: const Text('Insert Test Config', style: TextStyle(fontSize: 12, color: Colors.amberAccent)),
+                    onPressed: () {
+                      setState(() {
+                        _yamlController.text = KubeConfig.testKubeconfigYaml;
+                      });
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Inserted test kubeconfig (kubernetes-admin@kubernetes)!')),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Expanded(
