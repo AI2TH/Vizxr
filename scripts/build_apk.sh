@@ -38,7 +38,7 @@ echo "Output  : ${OUTPUT_DIR}/vizxr-${BUILD_TYPE}.apk"
     --platform linux/amd64 \
     -v "${PROJECT_ROOT}:/src:ro" \
     -v "${OUTPUT_DIR}:/out" \
-    -v "${GRADLE_DIR}:/root/.gradle" \
+    -v "${GRADLE_DIR}:/gradle-cache:ro" \
     "${IMAGE_NAME}" \
     bash -c '
 set -e
@@ -52,6 +52,7 @@ echo "--- Step 2: Apply Vizxr sources ---"
 cp -r /src/lib/. lib/
 cp /src/pubspec.yaml pubspec.yaml
 cp /src/android/app/src/main/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+[ -d /src/android/app/src/main/res ] && cp -r /src/android/app/src/main/res/. android/app/src/main/res/ || true
 [ -d /src/assets ] && cp -r /src/assets/. assets/ || true
 [ -d /src/test ] && cp -r /src/test/. test/ || true
 
@@ -64,11 +65,18 @@ printf "flutter.sdk=/opt/flutter\nsdk.dir=/opt/android-sdk\n" > android/local.pr
 echo "--- Step 3: flutter pub get ---"
 flutter pub get
 
-echo "--- Step 4: flutter build apk ---"
-export GRADLE_OPTS="-Dorg.gradle.daemon=false -Xmx3g -Dorg.gradle.internal.http.connectionTimeout=60000 -Dorg.gradle.internal.http.socketTimeout=60000"
+echo "--- Step 4: Setup local Gradle cache ---"
+export GRADLE_USER_HOME=/tmp/.gradle
+mkdir -p /tmp/.gradle
+if [ -d /gradle-cache/wrapper ]; then
+    cp -r /gradle-cache/wrapper /tmp/.gradle/ 2>/dev/null || true
+fi
+
+echo "--- Step 5: flutter build apk ---"
+export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.vfs.watch=false -Xmx3g -Dorg.gradle.internal.http.connectionTimeout=60000 -Dorg.gradle.internal.http.socketTimeout=60000"
 flutter build apk --'"${BUILD_TYPE}"' --no-tree-shake-icons
 
-echo "--- Step 5: Copy APK to output ---"
+echo "--- Step 6: Copy APK to output ---"
 cp build/app/outputs/flutter-apk/app-'"${BUILD_TYPE}"'.apk /out/vizxr-'"${BUILD_TYPE}"'.apk
 echo "APK size: $(du -sh /out/vizxr-'"${BUILD_TYPE}"'.apk | cut -f1)"
 '

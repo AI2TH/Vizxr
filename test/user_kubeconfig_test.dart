@@ -46,6 +46,7 @@ users:
       insecureSkipTlsVerify: config.insecureSkipTlsVerify,
     );
 
+    expect(client.baseUrl, equals(config.server));
     print('Client initialized successfully with mTLS context!');
   });
 }

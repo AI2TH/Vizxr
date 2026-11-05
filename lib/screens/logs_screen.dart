@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
+import '../theme/lens_theme.dart';
 
 class LogsScreen extends StatefulWidget {
   final K8sResource pod;
@@ -99,14 +100,10 @@ class _LogsScreenState extends State<LogsScreen> {
   }
 
   void _scrollToBottomIfNeeded() {
-    if (_autoScroll) {
+    if (_autoScroll && _scrollController.hasClients) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scrollController.hasClients) {
-          _scrollController.animateTo(
-            _scrollController.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOut,
-          );
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
         }
       });
     }
@@ -114,30 +111,49 @@ class _LogsScreenState extends State<LogsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredLines = _filter.isEmpty
-        ? _logs
-        : _logs
-            .split('\n')
-            .where((line) => line.toLowerCase().contains(_filter.toLowerCase()))
-            .join('\n');
-
     return Scaffold(
+      backgroundColor: LensTheme.bgTerminal,
       appBar: AppBar(
+        backgroundColor: LensTheme.bgDark,
+        elevation: 0,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Logs: ${widget.pod.name}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+            Row(
+              children: [
+                const Icon(Icons.terminal_rounded, size: 16, color: LensTheme.cyanAccent),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    widget.pod.name,
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
             Text(
-              'Container: $_selectedContainer (${widget.pod.namespace})',
-              style: const TextStyle(fontSize: 11, color: Colors.grey),
+              'Container: $_selectedContainer • ${widget.pod.namespace}',
+              style: const TextStyle(fontSize: 11, color: LensTheme.textMuted),
             ),
           ],
         ),
         actions: [
-          IconButton(
-            icon: Icon(_isStreaming ? Icons.stop_circle : Icons.play_circle_outline),
-            tooltip: _isStreaming ? 'Stop Live Stream' : 'Start Live Stream',
-            color: _isStreaming ? Colors.redAccent : Colors.greenAccent,
+          // Live follow toggle
+          TextButton.icon(
+            icon: Icon(
+              Icons.fiber_manual_record_rounded,
+              size: 12,
+              color: _isStreaming ? LensTheme.statusRed : LensTheme.textMuted,
+            ),
+            label: Text(
+              _isStreaming ? 'REC' : 'FOLLOW',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: _isStreaming ? LensTheme.statusRed : LensTheme.cyanAccent,
+              ),
+            ),
             onPressed: () {
               if (_isStreaming) {
                 _stopStream();
@@ -147,12 +163,7 @@ class _LogsScreenState extends State<LogsScreen> {
             },
           ),
           IconButton(
-            icon: Icon(_autoScroll ? Icons.vertical_align_bottom : Icons.pause),
-            tooltip: _autoScroll ? 'Auto-scroll ON' : 'Auto-scroll OFF',
-            onPressed: () => setState(() => _autoScroll = !_autoScroll),
-          ),
-          IconButton(
-            icon: const Icon(Icons.copy),
+            icon: const Icon(Icons.copy_rounded, size: 18, color: LensTheme.textSecondary),
             tooltip: 'Copy all logs',
             onPressed: () {
               Clipboard.setData(ClipboardData(text: _logs));
@@ -161,108 +172,143 @@ class _LogsScreenState extends State<LogsScreen> {
               );
             },
           ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (val) {
-              if (val.startsWith('lines:')) {
-                setState(() => _tailLines = int.parse(val.split(':')[1]));
-                _fetchLogs();
-              } else if (val == 'prev') {
-                setState(() => _showPrevious = !_showPrevious);
-                _fetchLogs();
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(enabled: false, child: Text('TAIL LINES', style: TextStyle(fontSize: 10, color: Colors.grey))),
-              const PopupMenuItem(value: 'lines:50', child: Text('Tail 50 lines')),
-              const PopupMenuItem(value: 'lines:100', child: Text('Tail 100 lines')),
-              const PopupMenuItem(value: 'lines:200', child: Text('Tail 200 lines')),
-              const PopupMenuItem(value: 'lines:500', child: Text('Tail 500 lines')),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'prev',
-                child: Text(_showPrevious ? '✓ Previous Container Logs' : 'Previous Container Logs'),
-              ),
-            ],
+        ],
+      ),
+      body: Column(
+        children: [
+          // Toolbar: Container dropdown, Tail Lines, Search Filter
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: const BoxDecoration(
+              color: LensTheme.bgDark,
+              border: Border(bottom: BorderSide(color: LensTheme.borderSubtle)),
+            ),
+            child: Row(
+              children: [
+                // Container Selector
+                if (widget.pod.containers.length > 1) ...[
+                  DropdownButton<String>(
+                    value: _selectedContainer,
+                    dropdownColor: LensTheme.bgSurface,
+                    underline: const SizedBox(),
+                    icon: const Icon(Icons.arrow_drop_down, color: LensTheme.cyanAccent, size: 18),
+                    items: widget.pod.containers.map((c) {
+                      return DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 12, color: LensTheme.cyanAccent)));
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setState(() => _selectedContainer = val);
+                        _fetchLogs();
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                ],
+
+                // Tail lines selector
+                DropdownButton<int>(
+                  value: _tailLines,
+                  dropdownColor: LensTheme.bgSurface,
+                  underline: const SizedBox(),
+                  icon: const Icon(Icons.arrow_drop_down, color: LensTheme.blueAccent, size: 18),
+                  items: [50, 100, 200, 500, 1000].map((lines) {
+                    return DropdownMenuItem(value: lines, child: Text('$lines lines', style: const TextStyle(fontSize: 11, color: LensTheme.blueAccent)));
+                  }).toList(),
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() => _tailLines = val);
+                      _fetchLogs();
+                    }
+                  },
+                ),
+                const Spacer(),
+
+                // Search Filter Input
+                SizedBox(
+                  width: 140,
+                  height: 32,
+                  child: TextField(
+                    controller: _searchController,
+                    style: const TextStyle(fontSize: 11, color: LensTheme.textPrimary),
+                    decoration: InputDecoration(
+                      hintText: 'Filter log...',
+                      hintStyle: const TextStyle(fontSize: 11, color: LensTheme.textMuted),
+                      prefixIcon: const Icon(Icons.search_rounded, size: 14, color: LensTheme.textMuted),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: LensTheme.borderSubtle)),
+                      contentPadding: EdgeInsets.zero,
+                      isDense: true,
+                    ),
+                    onChanged: (val) => setState(() => _filter = val.toLowerCase()),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Log View Area
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent))
+                : _buildLogContent(),
           ),
         ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(88),
-          child: Column(
-            children: [
-              if (widget.pod.containers.length > 1)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 2.0),
-                  child: Row(
-                    children: [
-                      const Text('Container:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: DropdownButton<String>(
-                          value: _selectedContainer,
-                          isDense: true,
-                          underline: const SizedBox(),
-                          items: widget.pod.containers.map((c) {
-                            return DropdownMenuItem<String>(
-                              value: c,
-                              child: Text(c, style: const TextStyle(fontSize: 12)),
-                            );
-                          }).toList(),
-                          onChanged: (val) {
-                            if (val != null) {
-                              setState(() => _selectedContainer = val);
-                              _fetchLogs();
-                            }
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                child: TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: 'Search log lines...',
-                    prefixIcon: const Icon(Icons.search, size: 18),
-                    suffixIcon: _filter.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear, size: 18),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() => _filter = '');
-                            },
-                          )
-                        : null,
-                    isDense: true,
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                    filled: true,
-                    fillColor: const Color(0xFF1E293B),
-                  ),
-                  onChanged: (val) => setState(() => _filter = val),
-                ),
-              ),
-            ],
-          ),
+      ),
+    );
+  }
+
+  Widget _buildLogContent() {
+    final lines = _logs.split('\n');
+    final filteredLines = _filter.isEmpty
+        ? lines
+        : lines.where((l) => l.toLowerCase().contains(_filter)).toList();
+
+    if (filteredLines.isEmpty) {
+      return Center(
+        child: Text(
+          _filter.isEmpty ? 'No logs emitted yet.' : 'No matches found for "$_filter"',
+          style: const TextStyle(color: LensTheme.textMuted, fontSize: 13),
+        ),
+      );
+    }
+
+    return SelectionArea(
+      child: ListView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.all(12),
+        itemCount: filteredLines.length,
+        itemBuilder: (context, index) {
+          final line = filteredLines[index];
+          return _formatLogLine(line);
+        },
+      ),
+    );
+  }
+
+  Widget _formatLogLine(String line) {
+    Color textColor = LensTheme.textSecondary;
+    final lower = line.toLowerCase();
+
+    if (lower.contains('error') || lower.contains('fail') || lower.contains('fatal') || lower.contains('panic')) {
+      textColor = LensTheme.statusRed;
+    } else if (lower.contains('warn')) {
+      textColor = LensTheme.statusAmber;
+    } else if (lower.contains('info') || lower.contains('ready') || lower.contains('ok')) {
+      textColor = LensTheme.statusGreen;
+    } else if (lower.contains('debug') || lower.contains('trace')) {
+      textColor = LensTheme.textMuted;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1.5),
+      child: Text(
+        line,
+        style: TextStyle(
+          color: textColor,
+          fontSize: 11.5,
+          fontFamily: 'monospace',
+          height: 1.35,
         ),
       ),
-      backgroundColor: const Color(0xFF090D16),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(12.0),
-              child: SelectableText(
-                filteredLines.isEmpty ? 'No matching logs.' : filteredLines,
-                style: const TextStyle(
-                  color: Color(0xFF4ADE80), // Terminal green
-                  fontFamily: 'monospace',
-                  fontSize: 11.5,
-                  height: 1.4,
-                ),
-              ),
-            ),
     );
   }
 }

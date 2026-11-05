@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
+import '../theme/lens_theme.dart';
 
 class YamlEditorScreen extends StatefulWidget {
   final String resourceName;
@@ -27,6 +28,12 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
     _controller = TextEditingController(text: widget.initialYaml);
   }
 
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   Future<void> _applyManifest() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
@@ -43,7 +50,7 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(result.message),
-            backgroundColor: Colors.green[800],
+            backgroundColor: LensTheme.statusGreen,
           ),
         );
         Navigator.pop(context, true);
@@ -61,16 +68,18 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        backgroundColor: LensTheme.bgSurface,
         title: const Row(
           children: [
-            Icon(Icons.error_outline, color: Colors.redAccent),
+            Icon(Icons.error_outline_rounded, color: LensTheme.statusRed),
             SizedBox(width: 8),
-            Text('Apply Error'),
+            Text('Apply Error', style: TextStyle(color: LensTheme.statusRed, fontWeight: FontWeight.bold)),
           ],
         ),
-        content: SelectableText(error),
+        content: SelectableText(error, style: const TextStyle(color: LensTheme.textPrimary)),
         actions: [
-          TextButton(
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: LensTheme.cyanAccent, foregroundColor: Colors.black),
             onPressed: () => Navigator.pop(ctx),
             child: const Text('OK'),
           ),
@@ -82,11 +91,24 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: LensTheme.bgTerminal,
       appBar: AppBar(
-        title: Text('Manifest: ${widget.resourceName}', style: const TextStyle(fontSize: 16)),
+        backgroundColor: LensTheme.bgDark,
+        elevation: 0,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.resourceName,
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
+              overflow: TextOverflow.ellipsis,
+            ),
+            const Text('Lens Manifest Studio', style: TextStyle(fontSize: 11, color: LensTheme.textMuted)),
+          ],
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.copy),
+            icon: const Icon(Icons.copy_rounded, size: 18, color: LensTheme.textSecondary),
             tooltip: 'Copy Manifest',
             onPressed: () {
               Clipboard.setData(ClipboardData(text: _controller.text));
@@ -102,39 +124,145 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
                 child: SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: LensTheme.cyanAccent),
                 ),
               ),
             )
           else
-            TextButton.icon(
-              icon: const Icon(Icons.check, size: 18, color: Colors.lightBlueAccent),
-              onPressed: _applyManifest,
-              label: const Text(
-                'APPLY',
-                style: TextStyle(color: Colors.lightBlueAccent, fontWeight: FontWeight.bold),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                label: const Text('APPLY'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: LensTheme.cyanAccent,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                onPressed: _applyManifest,
               ),
             ),
         ],
       ),
-      body: Container(
-        padding: const EdgeInsets.all(12.0),
-        color: const Color(0xFF0F172A),
-        child: TextField(
-          controller: _controller,
-          maxLines: null,
-          expands: true,
-          style: const TextStyle(
-            color: Color(0xFFE2E8F0),
-            fontFamily: 'monospace',
-            fontSize: 12.5,
-            height: 1.4,
+      body: Column(
+        children: [
+          // Quick Templates Bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: const BoxDecoration(
+              color: LensTheme.bgDark,
+              border: Border(bottom: BorderSide(color: LensTheme.borderSubtle)),
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildSnippetChip('Pod', _podSnippet),
+                  _buildSnippetChip('Deployment', _depSnippet),
+                  _buildSnippetChip('Service', _svcSnippet),
+                  _buildSnippetChip('ConfigMap', _cmSnippet),
+                ],
+              ),
+            ),
           ),
-          decoration: const InputDecoration(
-            border: InputBorder.none,
+
+          // Code Editor Area
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              color: LensTheme.bgTerminal,
+              child: TextField(
+                controller: _controller,
+                maxLines: null,
+                expands: true,
+                style: const TextStyle(
+                  color: LensTheme.textPrimary,
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  height: 1.45,
+                ),
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  fillColor: Colors.transparent,
+                ),
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
+
+  Widget _buildSnippetChip(String label, String snippet) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: ActionChip(
+        label: Text(label, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+        backgroundColor: LensTheme.bgInput,
+        side: const BorderSide(color: LensTheme.borderSubtle),
+        onPressed: () {
+          setState(() => _controller.text = snippet);
+        },
+      ),
+    );
+  }
+
+  static const String _podSnippet = '''apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-pod
+  namespace: default
+spec:
+  containers:
+  - name: app
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+''';
+
+  static const String _depSnippet = '''apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-deploy
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      containers:
+      - name: web
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+''';
+
+  static const String _svcSnippet = '''apiVersion: v1
+kind: Service
+metadata:
+  name: demo-svc
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: demo
+  ports:
+  - port: 80
+    targetPort: 80
+''';
+
+  static const String _cmSnippet = '''apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-config
+  namespace: default
+data:
+  APP_ENV: production
+  LOG_LEVEL: info
+''';
 }

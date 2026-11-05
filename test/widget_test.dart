@@ -17,7 +17,7 @@ void main() {
         providers: [
           ChangeNotifierProvider(create: (_) => ClusterState()),
         ],
-        child: const K8sConsoleApp(),
+        child: const VizxrApp(),
       ),
     );
     await tester.pumpAndSettle();

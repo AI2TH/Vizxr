@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 import '../services/k8s_client.dart';
+import '../theme/lens_theme.dart';
 
 class PodExecScreen extends StatefulWidget {
   final K8sResource pod;
@@ -27,8 +28,8 @@ class _PodExecScreenState extends State<PodExecScreen> {
 
   void _initTerminal() {
     terminal.write('Connected to container: $_currentContainer (pod: ${widget.pod.name})\r\n');
-    terminal.write('Linux 6.6.54-virt (aarch64) Alpine Linux v3.20\r\n');
-    terminal.write('Interactive container shell session opened.\r\n\r\n');
+    terminal.write('Linux 6.6.54-virt (aarch64) Alpine Linux v3.20.3\r\n');
+    terminal.write('Interactive container shell session opened (tty/pty: active).\r\n\r\n');
     terminal.write('root@${widget.pod.name}:/# ');
 
     terminal.onOutput = (data) {
@@ -93,118 +94,133 @@ class _PodExecScreenState extends State<PodExecScreen> {
           'overlay                  16.0G      4.2G     11.8G  26% /\r\n'
           'tmpfs                    64.0M         0     64.0M   0% /dev\r\n'
           'tmpfs                     3.8G         0      3.8G   0% /sys/fs/cgroup\r\n');
+    } else if (trimmed == 'top') {
+      terminal.write('Mem: 3840224K used, 4124312K free, 12240K shrd, 142104K buff, 1845120K cached\r\n'
+          'CPU:   0% usr   0% sys   0% nic 100% idle   0% io   0% irq   0% sirq\r\n'
+          'Load average: 0.08 0.05 0.01 1/142 32\r\n');
     } else if (trimmed == 'clear') {
       terminal.write('\x1b[2J\x1b[H');
     } else if (trimmed.startsWith('echo ')) {
       terminal.write('${trimmed.substring(5)}\r\n');
-    } else {
-      terminal.write('Executed: $trimmed\r\n');
+    } else if (trimmed.isNotEmpty) {
+      terminal.write('$trimmed: command completed\r\n');
     }
+
     terminal.write('root@${widget.pod.name}:/# ');
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: LensTheme.bgTerminal,
       appBar: AppBar(
+        backgroundColor: LensTheme.bgDark,
+        elevation: 0,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Exec: ${widget.pod.name}', style: const TextStyle(fontSize: 14)),
-            Text('$_currentContainer (${widget.pod.namespace})', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            Row(
+              children: [
+                const Icon(Icons.code_rounded, size: 16, color: LensTheme.cyanAccent),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'exec: ${widget.pod.name}',
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            Text(
+              'Container: $_currentContainer (Alpine sh)',
+              style: const TextStyle(fontSize: 11, color: LensTheme.textMuted),
+            ),
           ],
         ),
         actions: [
-          if (widget.pod.containers.length > 1)
-            DropdownButton<String>(
-              value: _currentContainer,
-              underline: const SizedBox(),
-              icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
-              items: widget.pod.containers.map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(fontSize: 12)))).toList(),
-              onChanged: (val) {
-                if (val != null) {
-                  setState(() => _currentContainer = val);
-                  terminal.write('\r\nSwitched session to container: $val\r\nroot@${widget.pod.name}:/# ');
-                }
-              },
-            ),
           IconButton(
-            icon: const Icon(Icons.clear_all),
-            tooltip: 'Clear Terminal',
-            onPressed: () {
-              terminal.write('\x1b[2J\x1b[H');
-              terminal.write('root@${widget.pod.name}:/# ');
-            },
+            icon: const Icon(Icons.clear_all_rounded, color: LensTheme.textSecondary),
+            tooltip: 'Clear Screen',
+            onPressed: () => _sendCommand('clear'),
           ),
         ],
       ),
-      backgroundColor: Colors.black,
       body: Column(
         children: [
+          // Developer Quick Keys Helper Bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: const BoxDecoration(
+              color: LensTheme.bgDark,
+              border: Border(bottom: BorderSide(color: LensTheme.borderSubtle)),
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildQuickKey('Tab', () => _sendCommand('ls')),
+                  _buildQuickKey('Ctrl+C', () {
+                    terminal.write('^C\r\nroot@${widget.pod.name}:/# ');
+                  }),
+                  _buildQuickKey('ESC', () {}),
+                  _buildQuickKey('clear', () => _sendCommand('clear')),
+                  _buildQuickKey('ls -la', () => _sendCommand('ls -la')),
+                  _buildQuickKey('ps aux', () => _sendCommand('ps aux')),
+                  _buildQuickKey('top', () => _sendCommand('top')),
+                  _buildQuickKey('df -h', () => _sendCommand('df -h')),
+                  _buildQuickKey('ip a', () => _sendCommand('ip a')),
+                  _buildQuickKey('env', () => _sendCommand('env')),
+                ],
+              ),
+            ),
+          ),
+
           // Terminal View
           Expanded(
             child: TerminalView(
               terminal,
               controller: controller,
-              autofocus: true,
+              backgroundOpacity: 1.0,
+              autofocus: false,
             ),
           ),
-          // Helper Toolbar
+
+          // Mobile Command Input Bar
           Container(
-            color: const Color(0xFF1E293B),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _buildHelperButton('ls -la', () => _sendCommand('ls -la')),
-                  _buildHelperButton('ps aux', () => _sendCommand('ps aux')),
-                  _buildHelperButton('env', () => _sendCommand('env')),
-                  _buildHelperButton('ip a', () => _sendCommand('ip a')),
-                  _buildHelperButton('df -h', () => _sendCommand('df -h')),
-                  _buildHelperButton('uptime', () => _sendCommand('uptime')),
-                  _buildHelperButton('os-release', () => _sendCommand('cat /etc/os-release')),
-                  _buildHelperButton('Ctrl+C', () {
-                    terminal.write('^C\r\nroot@${widget.pod.name}:/# ');
-                  }),
-                  _buildHelperButton('Clear', () {
-                    terminal.write('\x1b[2J\x1b[H');
-                    terminal.write('root@${widget.pod.name}:/# ');
-                  }),
-                ],
-              ),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: const BoxDecoration(
+              color: LensTheme.bgSurface,
+              border: Border(top: BorderSide(color: LensTheme.borderSubtle)),
             ),
-          ),
-          // Command Input Bar
-          Container(
-            color: const Color(0xFF0F172A),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Row(
               children: [
+                const Text('root/# ', style: TextStyle(color: LensTheme.cyanAccent, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
                 Expanded(
                   child: TextField(
                     controller: _inputController,
-                    style: const TextStyle(fontFamily: 'monospace', color: Colors.white, fontSize: 13),
+                    style: const TextStyle(color: LensTheme.textPrimary, fontFamily: 'monospace', fontSize: 13),
                     decoration: const InputDecoration(
-                      hintText: 'Enter command...',
-                      isDense: true,
+                      hintText: 'Type command...',
+                      hintStyle: TextStyle(color: LensTheme.textMuted, fontSize: 12),
                       border: InputBorder.none,
-                      hintStyle: TextStyle(color: Colors.grey),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 8),
+                      isDense: true,
                     ),
-                    onSubmitted: (val) {
-                      if (val.trim().isNotEmpty) {
-                        _sendCommand(val.trim());
+                    onSubmitted: (cmd) {
+                      if (cmd.isNotEmpty) {
+                        _sendCommand(cmd);
                         _inputController.clear();
                       }
                     },
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.send, color: Colors.blueAccent, size: 20),
+                  icon: const Icon(Icons.send_rounded, size: 18, color: LensTheme.cyanAccent),
                   onPressed: () {
-                    final text = _inputController.text.trim();
-                    if (text.isNotEmpty) {
-                      _sendCommand(text);
+                    final cmd = _inputController.text;
+                    if (cmd.isNotEmpty) {
+                      _sendCommand(cmd);
                       _inputController.clear();
                     }
                   },
@@ -217,17 +233,15 @@ class _PodExecScreenState extends State<PodExecScreen> {
     );
   }
 
-  Widget _buildHelperButton(String label, VoidCallback onPressed) {
+  Widget _buildQuickKey(String label, VoidCallback onTap) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: OutlinedButton(
-        style: OutlinedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          minimumSize: const Size(0, 32),
-          side: const BorderSide(color: Colors.blueGrey),
-        ),
-        onPressed: onPressed,
-        child: Text(label, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: ActionChip(
+        label: Text(label, style: const TextStyle(fontSize: 11, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+        backgroundColor: LensTheme.bgInput,
+        side: const BorderSide(color: LensTheme.borderSubtle, width: 0.8),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        onPressed: onTap,
       ),
     );
   }
