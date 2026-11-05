@@ -16,6 +16,7 @@ class ClusterState extends ChangeNotifier {
   String get currentNamespace => _currentNamespace;
   List<String> get namespaces => _namespaces;
   bool get isLiveConnected => _isLiveConnected;
+  bool get isDemo => _activeClient.isDemo;
 
   ClusterState() {
     _initDefaultClient();
@@ -23,7 +24,7 @@ class ClusterState extends ChangeNotifier {
   }
 
   void _initDefaultClient() {
-    _activeClient = K8sClientService(baseUrl: 'https://127.0.0.1:6443');
+    _activeClient = K8sClientService(baseUrl: 'https://127.0.0.1:6443', isDemo: false);
   }
 
   Future<void> refreshConfigs() async {
@@ -40,6 +41,11 @@ class ClusterState extends ChangeNotifier {
 
   void _initClient() {
     final server = _activeConfig?.server ?? 'https://127.0.0.1:6443';
+    final name = _activeConfig?.name ?? '';
+    final isDemo = server.contains('demo.k8s.local') ||
+                   server.contains('simulation') ||
+                   name.toLowerCase().contains('demo') ||
+                   name.toLowerCase().contains('simulation');
     final token = _activeConfig?.token;
     final caCert = _activeConfig?.caCert;
     final clientCert = _activeConfig?.clientCertData;
@@ -53,20 +59,29 @@ class ClusterState extends ChangeNotifier {
       clientCertData: clientCert,
       clientKeyData: clientKey,
       insecureSkipTlsVerify: insecure,
+      isDemo: isDemo,
     );
   }
 
   Future<void> _checkLiveConnection() async {
     try {
+      if (_activeClient.isDemo) {
+        _isLiveConnected = true;
+        _namespaces = ['all-namespaces', 'default', 'kube-system', 'database', 'production', 'monitoring'];
+        return;
+      }
       _isLiveConnected = await _activeClient.testConnection();
       if (_isLiveConnected) {
         final nsList = await _activeClient.fetchNamespaces();
         if (nsList.isNotEmpty) {
           _namespaces = nsList;
         }
+      } else {
+        _namespaces = ['all-namespaces', 'default'];
       }
     } catch (_) {
       _isLiveConnected = false;
+      _namespaces = ['all-namespaces', 'default'];
     }
   }
 

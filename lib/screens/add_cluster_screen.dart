@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/kubeconfig.dart';
+import '../theme/lens_theme.dart';
 
 class AddClusterScreen extends StatefulWidget {
   const AddClusterScreen({super.key});
@@ -45,10 +46,18 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: LensTheme.bgDark,
       appBar: AppBar(
-        title: const Text('Add Kubernetes Cluster'),
+        backgroundColor: LensTheme.bgDark,
+        elevation: 0,
+        title: const Text('Add Kubernetes Cluster', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         bottom: TabBar(
           controller: _tabController,
+          indicatorColor: LensTheme.cyanAccent,
+          indicatorWeight: 2.5,
+          labelColor: LensTheme.cyanAccent,
+          unselectedLabelColor: LensTheme.textMuted,
+          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
           tabs: const [
             Tab(text: 'Presets'),
             Tab(text: 'Kubeconfig'),
@@ -57,7 +66,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
         ),
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent))
           : TabBarView(
               controller: _tabController,
               children: [
@@ -75,19 +84,19 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
       children: [
         const Text(
           'Quick 1-Tap Mobile Presets',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         const Text(
           'Connect immediately to local mobile Kubernetes runtimes or development workstations.',
-          style: TextStyle(fontSize: 13, color: Colors.grey),
+          style: TextStyle(fontSize: 12, color: LensTheme.textMuted),
         ),
         const SizedBox(height: 16),
         _buildPresetCard(
           title: 'User Test Cluster (kubernetes-admin@kubernetes)',
           subtitle: 'https://172.16.0.2:6443 (mTLS credentials with loopback fallback)',
           icon: Icons.security_rounded,
-          color: Colors.greenAccent,
+          color: LensTheme.statusGreen,
           onTap: () async {
             setState(() => _isLoading = true);
             try {
@@ -97,17 +106,17 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               if (!mounted) return;
               setState(() => _isLoading = false);
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to load test cluster: $e'), backgroundColor: Colors.redAccent),
+                SnackBar(content: Text('Failed to load test cluster: $e'), backgroundColor: LensTheme.statusRed),
               );
             }
           },
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         _buildPresetCard(
           title: 'Auto-Detect Linxr / K3s Node',
           subtitle: 'Scan /sdcard/Linxr/k3s.yaml and shared storage',
-          icon: Icons.auto_awesome,
-          color: Colors.amberAccent,
+          icon: Icons.auto_awesome_rounded,
+          color: LensTheme.statusAmber,
           onTap: () async {
             setState(() => _isLoading = true);
             final detected = await KubeConfig.autoDetectLinxrKubeconfig();
@@ -118,9 +127,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               await _saveAndFinish(detected);
             } else {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('No exported k3s.yaml found on storage. Using default 127.0.0.1:6443.'),
-                ),
+                const SnackBar(content: Text('No exported k3s.yaml found on storage. Using default 127.0.0.1:6443.')),
               );
               final fallback = KubeConfig(
                 name: 'Linxr Local Cluster',
@@ -131,12 +138,12 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
             }
           },
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         _buildPresetCard(
           title: 'Linxr / Kubxr Local Loopback',
           subtitle: 'https://127.0.0.1:6443 (On-Device Mobile VM)',
           icon: Icons.smartphone_rounded,
-          color: Colors.blueAccent,
+          color: LensTheme.cyanAccent,
           onTap: () async {
             final config = KubeConfig(
               name: 'Linxr Local Cluster',
@@ -146,27 +153,12 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
             await _saveAndFinish(config);
           },
         ),
-        const SizedBox(height: 12),
-        _buildPresetCard(
-          title: 'Android Host Loopback',
-          subtitle: 'https://10.0.2.2:6443 (Host machine cluster)',
-          icon: Icons.laptop_chromebook,
-          color: Colors.purpleAccent,
-          onTap: () async {
-            final config = KubeConfig(
-              name: 'Host Workstation Cluster',
-              server: 'https://10.0.2.2:6443',
-              insecureSkipTlsVerify: true,
-            );
-            await _saveAndFinish(config);
-          },
-        ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         _buildPresetCard(
           title: 'Demo Simulator Cluster',
           subtitle: 'Multi-node Lens simulation with interactive pods & logs',
-          icon: Icons.model_training,
-          color: Colors.tealAccent,
+          icon: Icons.view_in_ar_rounded,
+          color: LensTheme.purpleAccent,
           onTap: () async {
             final config = KubeConfig(
               name: 'Demo Cluster (Simulation)',
@@ -187,13 +179,24 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
     required Color color,
     required VoidCallback onTap,
   }) {
-    return Card(
-      elevation: 2,
+    return Container(
+      decoration: LensTheme.cardDecoration(
+        borderColor: color.withOpacity(0.3),
+        radius: 14,
+      ),
       child: ListTile(
-        leading: Icon(icon, color: color, size: 32),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-        subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
-        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.15),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: color, size: 24),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: LensTheme.textPrimary)),
+        subtitle: Text(subtitle, style: const TextStyle(fontSize: 11, color: LensTheme.textMuted)),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: LensTheme.textMuted),
         onTap: onTap,
       ),
     );
@@ -210,16 +213,21 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               Expanded(
                 child: TextField(
                   controller: _pathController,
+                  style: const TextStyle(fontSize: 12, color: LensTheme.textPrimary),
                   decoration: const InputDecoration(
-                    labelText: 'Load from File Path (optional)',
+                    labelText: 'Load from File Path',
                     hintText: '/sdcard/Linxr/k3s.yaml',
                     isDense: true,
-                    border: OutlineInputBorder(),
                   ),
                 ),
               ),
               const SizedBox(width: 8),
               ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: LensTheme.cyanAccent,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                ),
                 onPressed: () async {
                   final path = _pathController.text.trim();
                   if (path.isEmpty) return;
@@ -231,7 +239,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
                     if (!mounted) return;
                     setState(() => _isLoading = false);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to read file: $e'), backgroundColor: Colors.redAccent),
+                      SnackBar(content: Text('Failed to read file: $e'), backgroundColor: LensTheme.statusRed),
                     );
                   }
                 },
@@ -239,34 +247,14 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                ActionChip(
-                  avatar: const Icon(Icons.description, size: 14),
-                  label: const Text('test_kubeconfig.yaml', style: TextStyle(fontSize: 11)),
-                  onPressed: () {
-                    _pathController.text = '/sdcard/Download/test_kubeconfig.yaml';
-                  },
-                ),
-                const SizedBox(width: 8),
-                ActionChip(
-                  avatar: const Icon(Icons.folder, size: 14),
-                  label: const Text('Linxr k3s.yaml', style: TextStyle(fontSize: 11)),
-                  onPressed: () {
-                    _pathController.text = '/sdcard/Linxr/k3s.yaml';
-                  },
-                ),
-                const SizedBox(width: 8),
-                ActionChip(
-                  avatar: const Icon(Icons.file_present, size: 14),
-                  label: const Text('/sdcard/kubeconfig', style: TextStyle(fontSize: 11)),
-                  onPressed: () {
-                    _pathController.text = '/sdcard/kubeconfig';
-                  },
-                ),
+                _buildQuickPathChip('test_kubeconfig.yaml', '/sdcard/Download/test_kubeconfig.yaml'),
+                _buildQuickPathChip('Linxr k3s.yaml', '/sdcard/Linxr/k3s.yaml'),
+                _buildQuickPathChip('/sdcard/kubeconfig', '/sdcard/kubeconfig'),
               ],
             ),
           ),
@@ -276,14 +264,14 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
             children: [
               const Text(
                 'Or Paste Kubeconfig (YAML / JSON):',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: LensTheme.textSecondary),
               ),
               Row(
                 children: [
                   TextButton.icon(
-                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
-                    icon: const Icon(Icons.content_paste, size: 16),
-                    label: const Text('Paste', style: TextStyle(fontSize: 12)),
+                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6)),
+                    icon: const Icon(Icons.content_paste_rounded, size: 14),
+                    label: const Text('Paste', style: TextStyle(fontSize: 11)),
                     onPressed: () async {
                       final data = await Clipboard.getData('text/plain');
                       if (data?.text != null && data!.text!.isNotEmpty) {
@@ -299,9 +287,9 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
                     },
                   ),
                   TextButton.icon(
-                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
-                    icon: const Icon(Icons.play_circle_fill, size: 16, color: Colors.amberAccent),
-                    label: const Text('Insert Test Config', style: TextStyle(fontSize: 12, color: Colors.amberAccent)),
+                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6)),
+                    icon: const Icon(Icons.play_circle_fill_rounded, size: 14, color: LensTheme.statusAmber),
+                    label: const Text('Insert Test Config', style: TextStyle(fontSize: 11, color: LensTheme.statusAmber)),
                     onPressed: () {
                       setState(() {
                         _yamlController.text = KubeConfig.testKubeconfigYaml;
@@ -315,26 +303,33 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Expanded(
-            child: TextField(
-              controller: _yamlController,
-              maxLines: null,
-              expands: true,
-              decoration: const InputDecoration(
-                hintText: 'apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    server: https://...\n...',
-                border: OutlineInputBorder(),
-                filled: true,
-                fillColor: Color(0xFF0F172A),
+            child: Container(
+              decoration: BoxDecoration(
+                color: LensTheme.bgTerminal,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: LensTheme.borderSubtle),
               ),
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              child: TextField(
+                controller: _yamlController,
+                maxLines: null,
+                expands: true,
+                decoration: const InputDecoration(
+                  hintText: 'apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    server: https://...\n...',
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.all(12),
+                ),
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: LensTheme.textPrimary),
+              ),
             ),
           ),
           const SizedBox(height: 12),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blueAccent,
-              padding: const EdgeInsets.symmetric(vertical: 12),
+              backgroundColor: LensTheme.cyanAccent,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(vertical: 14),
             ),
             onPressed: () async {
               final text = _yamlController.text.trim();
@@ -347,13 +342,27 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
                 if (!mounted) return;
                 setState(() => _isLoading = false);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error: $e'), backgroundColor: Colors.redAccent),
+                  SnackBar(content: Text('Error: $e'), backgroundColor: LensTheme.statusRed),
                 );
               }
             },
-            child: const Text('IMPORT KUBECONFIG', style: TextStyle(fontWeight: FontWeight.bold)),
+            child: const Text('IMPORT KUBECONFIG', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildQuickPathChip(String label, String path) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: ActionChip(
+        label: Text(label, style: const TextStyle(fontSize: 10)),
+        backgroundColor: LensTheme.bgInput,
+        side: const BorderSide(color: LensTheme.borderSubtle),
+        onPressed: () {
+          setState(() => _pathController.text = path);
+        },
       ),
     );
   }
@@ -364,66 +373,49 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
       children: [
         const Text(
           'Direct Cluster Parameters & mTLS',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
         TextField(
           controller: _nameController,
-          decoration: const InputDecoration(
-            labelText: 'Cluster Display Name',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(labelText: 'Cluster Display Name'),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         TextField(
           controller: _serverController,
-          decoration: const InputDecoration(
-            labelText: 'Kubernetes API Server URL',
-            hintText: 'https://192.168.1.100:6443',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(labelText: 'Kubernetes API Server URL', hintText: 'https://192.168.1.100:6443'),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         TextField(
           controller: _tokenController,
           maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Bearer Token (Optional)',
-            hintText: 'eyJhbGciOiJSUzI1NiIs...',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(labelText: 'Bearer Token (Optional)'),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         TextField(
           controller: _clientCertController,
           maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Client Certificate PEM / base64 (Optional)',
-            hintText: '-----BEGIN CERTIFICATE-----',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(labelText: 'Client Certificate PEM / base64 (Optional)'),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         TextField(
           controller: _clientKeyController,
           maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: 'Client Private Key PEM / base64 (Optional)',
-            hintText: '-----BEGIN RSA PRIVATE KEY-----',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(labelText: 'Client Private Key PEM / base64 (Optional)'),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         SwitchListTile(
-          title: const Text('Skip TLS Certificate Verification'),
-          subtitle: const Text('Recommended for self-signed certificates and mobile local nodes'),
+          title: const Text('Skip TLS Certificate Verification', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          subtitle: const Text('Recommended for self-signed certificates and mobile local nodes', style: TextStyle(fontSize: 11, color: LensTheme.textMuted)),
           value: _insecure,
+          activeColor: LensTheme.cyanAccent,
           onChanged: (val) => setState(() => _insecure = val),
         ),
         const SizedBox(height: 16),
         ElevatedButton(
           style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.blueAccent,
+            backgroundColor: LensTheme.cyanAccent,
+            foregroundColor: Colors.black,
             padding: const EdgeInsets.symmetric(vertical: 14),
           ),
           onPressed: () async {
@@ -444,7 +436,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
             );
             await _saveAndFinish(config);
           },
-          child: const Text('SAVE & CONNECT', style: TextStyle(fontWeight: FontWeight.bold)),
+          child: const Text('SAVE & CONNECT', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
         ),
       ],
     );

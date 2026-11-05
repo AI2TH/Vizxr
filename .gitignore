@@ -1,3 +1,4 @@
+# Android build outputs & release bundles
 *.apk
 *.aab
 
@@ -7,3 +8,20 @@ build/
 .gradle/
 *.iml
 .idea/
+
+# Flutter / Dart
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+pubspec.lock
+
+# Android local
+android/local.properties
+android/.gradle
+**/android/app/build/
+
+# Local testing and debug screenshots
+screen_*.png
+test_*.png
+*.log
+**/GeneratedPluginRegistrant.java
