@@ -31,9 +31,11 @@ class ClusterState extends ChangeNotifier {
   Future<void> refreshConfigs() async {
     _availableConfigs = await KubeConfig.loadConfigs();
     if (_availableConfigs.isNotEmpty) {
-      if (_activeConfig == null || !_availableConfigs.any((c) => c.name == _activeConfig!.name)) {
-        _activeConfig = _availableConfigs.first;
-      }
+      final activeId = _activeConfig?.id;
+      _activeConfig = _availableConfigs.firstWhere(
+        (c) => c.id == activeId,
+        orElse: () => _availableConfigs.first,
+      );
     }
     _initClient();
     await _checkLiveConnection();
@@ -99,27 +101,32 @@ class ClusterState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Saves a new cluster and connects to it. A name already used by another
+  /// cluster gets a " (2)" suffix; rename it from the edit screen.
   Future<void> addConfig(KubeConfig config) async {
-    await KubeConfig.saveConfig(config);
+    final existing = await KubeConfig.loadConfigs();
+    final taken = existing.where((c) => c.id != config.id).map((c) => c.name);
+    final toSave = config.copyWith(name: KubeConfig.uniqueName(config.name, taken));
+    await KubeConfig.saveConfig(toSave);
+    _activeConfig = toSave;
     await refreshConfigs();
-    await setConfig(config);
   }
 
   /// Saves changes to an existing cluster. Reconnects when it is the active one.
   Future<void> updateConfig(KubeConfig config) async {
     await KubeConfig.saveConfig(config);
-    final wasActive = _activeConfig?.storageKey == config.storageKey;
+    final wasActive = _activeConfig?.id == config.id;
     _availableConfigs = await KubeConfig.loadConfigs();
     if (wasActive) {
-      await setConfig(_availableConfigs.firstWhere((c) => c.storageKey == config.storageKey, orElse: () => config));
+      await setConfig(_availableConfigs.firstWhere((c) => c.id == config.id, orElse: () => config));
     } else {
       notifyListeners();
     }
   }
 
-  Future<void> deleteConfig(String name) async {
-    await KubeConfig.deleteConfig(name);
-    if (_activeConfig?.name == name) {
+  Future<void> deleteConfig(String id) async {
+    await KubeConfig.deleteConfig(id);
+    if (_activeConfig?.id == id) {
       _activeConfig = null;
     }
     await refreshConfigs();

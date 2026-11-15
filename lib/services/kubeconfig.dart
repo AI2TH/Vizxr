@@ -1,10 +1,14 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yaml/yaml.dart';
 import 'secret_store.dart';
 
 class KubeConfig {
+  /// Stable key for storage. Two kubeconfigs with the same context name
+  /// (k3s always calls it "default") no longer overwrite each other.
+  final String id;
   final String name;
   final String server;
   final String? token;
@@ -15,6 +19,7 @@ class KubeConfig {
   final bool insecureSkipTlsVerify;
 
   KubeConfig({
+    String? id,
     required this.name,
     required this.server,
     this.token,
@@ -23,7 +28,28 @@ class KubeConfig {
     this.clientKeyData,
     this.defaultNamespace = 'default',
     this.insecureSkipTlsVerify = false,
-  });
+  }) : id = (id == null || id.isEmpty) ? newId() : id;
+
+  static final Random _random = Random.secure();
+
+  /// A random 16-hex-digit id.
+  static String newId() =>
+      List.generate(8, (_) => _random.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+
+  /// Ids of the clusters Vizxr always offers.
+  static const String linxrLocalId = 'builtin-linxr-local';
+  static const String demoId = 'builtin-demo';
+
+  /// [name], or "name (2)", "name (3)"... if it is already taken.
+  static String uniqueName(String name, Iterable<String> taken) {
+    final used = taken.toSet();
+    if (!used.contains(name)) return name;
+    var n = 2;
+    while (used.contains('$name ($n)')) {
+      n++;
+    }
+    return '$name ($n)';
+  }
 
   KubeConfig copyWith({
     String? name,
@@ -36,6 +62,7 @@ class KubeConfig {
     bool? insecureSkipTlsVerify,
   }) =>
       KubeConfig(
+        id: id,
         name: name ?? this.name,
         server: server ?? this.server,
         token: token ?? this.token,
@@ -48,6 +75,7 @@ class KubeConfig {
 
   /// Everything except the credentials. This is what goes to SharedPreferences.
   Map<String, dynamic> toJson() => {
+    'id': id,
     'name': name,
     'server': server,
     'caCert': caCert,
@@ -63,6 +91,7 @@ class KubeConfig {
   };
 
   factory KubeConfig.fromJson(Map<String, dynamic> json, {Map? secrets}) => KubeConfig(
+    id: json['id']?.toString(),
     name: json['name'] ?? 'Cluster',
     server: json['server'] ?? 'https://127.0.0.1:6443',
     token: secrets?['token']?.toString() ?? json['token'],
@@ -81,10 +110,7 @@ class KubeConfig {
   /// Where tokens and client keys live. Replace with [MemorySecretStore] in tests.
   static SecretStore secretStore = const SecureSecretStore();
 
-  /// Key that links a config to its entry in the secrets map.
-  String get storageKey => name;
-
-  static String? _keyOf(Map map) => map['name']?.toString();
+  static String? _keyOf(Map map) => map['id']?.toString();
 
   /// Reads the credentials map, or null when secure storage is unavailable.
   static Future<Map<String, Map<String, dynamic>>?> _readSecrets() async {
@@ -116,9 +142,9 @@ class KubeConfig {
     final secrets = await _readSecrets() ?? {};
     final configSecrets = config.secretsJson();
     if (configSecrets.isEmpty) {
-      secrets.remove(config.storageKey);
+      secrets.remove(config.id);
     } else {
-      secrets[config.storageKey] = configSecrets;
+      secrets[config.id] = configSecrets;
     }
     await _writeSecrets(secrets);
 
@@ -128,7 +154,7 @@ class KubeConfig {
     // Remove existing config with same key if any
     configs.removeWhere((s) {
       try {
-        return _keyOf(jsonDecode(s)) == config.storageKey;
+        return _keyOf(jsonDecode(s)) == config.id;
       } catch (_) {
         return false;
       }
@@ -365,6 +391,20 @@ class KubeConfig {
         rewritten.add(s);
         continue;
       }
+      // Migration: configs saved before ids existed were keyed by name.
+      if (map['id'] == null || map['id'].toString().isEmpty) {
+        final legacyName = map['name']?.toString();
+        final id = map['name'] == 'Linxr Local Cluster'
+            ? linxrLocalId
+            : (map['name'] == 'Demo Cluster (Simulation)' ? demoId : newId());
+        map['id'] = id;
+        if (secrets != null && legacyName != null && secrets.containsKey(legacyName)) {
+          secrets[id] = secrets.remove(legacyName)!;
+        }
+        // Without readable secure storage the name-keyed credentials cannot
+        // be re-keyed, so keep the old entries and retry on the next launch.
+        if (secrets != null) migrated = true;
+      }
       final key = _keyOf(map);
       if (secrets != null && key != null && (map.containsKey('token') || map.containsKey('clientKeyData'))) {
         final legacy = <String, dynamic>{
@@ -382,15 +422,16 @@ class KubeConfig {
         configs.add(KubeConfig.fromJson(map, secrets: key == null ? null : secrets?[key]));
       } catch (_) {}
     }
-    if (migrated && secrets != null) {
-      await _writeSecrets(secrets);
+    if (migrated) {
+      if (secrets != null) await _writeSecrets(secrets);
       await prefs.setStringList(_storageKey, rewritten);
     }
 
     // Always ensure the local Linxr / Kubxr cluster is available
-    final hasLocal = configs.any((c) => c.server.contains('127.0.0.1:6443') || c.name == 'Linxr Local Cluster');
+    final hasLocal = configs.any((c) => c.id == linxrLocalId || c.server.contains('127.0.0.1:6443'));
     if (!hasLocal) {
       configs.add(KubeConfig(
+        id: linxrLocalId,
         name: 'Linxr Local Cluster',
         server: 'https://127.0.0.1:6443',
         defaultNamespace: 'default',
@@ -399,9 +440,10 @@ class KubeConfig {
     }
 
     // Always ensure Demo Simulator Cluster is available for offline testing
-    final hasDemo = configs.any((c) => c.name == 'Demo Cluster (Simulation)');
+    final hasDemo = configs.any((c) => c.id == demoId || c.name == 'Demo Cluster (Simulation)');
     if (!hasDemo) {
       configs.add(KubeConfig(
+        id: demoId,
         name: 'Demo Cluster (Simulation)',
         server: 'https://demo.k8s.local',
         defaultNamespace: 'default',

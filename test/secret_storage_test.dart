@@ -75,7 +75,7 @@ void main() {
   test('deleteConfig removes the credentials too', () async {
     final config = KubeConfig(name: 'gone', server: 'https://x', token: 't');
     await KubeConfig.saveConfig(config);
-    await KubeConfig.deleteConfig(config.storageKey);
+    await KubeConfig.deleteConfig(config.id);
     expect(store.values[KubeConfig.secretsStorageKey], isNull);
   });
 }

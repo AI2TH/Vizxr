@@ -4,7 +4,7 @@ import '../services/cluster_state.dart';
 import '../services/kubeconfig.dart';
 import '../theme/lens_theme.dart';
 
-/// Edits a saved cluster: API server, default namespace, CA and TLS checks.
+/// Edits a saved cluster: name, API server, default namespace, CA and TLS checks.
 class EditClusterScreen extends StatefulWidget {
   final KubeConfig config;
 
@@ -15,6 +15,7 @@ class EditClusterScreen extends StatefulWidget {
 }
 
 class _EditClusterScreenState extends State<EditClusterScreen> {
+  late final TextEditingController _nameController;
   late final TextEditingController _serverController;
   late final TextEditingController _namespaceController;
   late final TextEditingController _caCertController;
@@ -25,6 +26,7 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
   void initState() {
     super.initState();
     final c = widget.config;
+    _nameController = TextEditingController(text: c.name);
     _serverController = TextEditingController(text: c.server);
     _namespaceController = TextEditingController(text: c.defaultNamespace);
     _caCertController = TextEditingController(text: c.caCert ?? '');
@@ -33,6 +35,7 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
 
   @override
   void dispose() {
+    _nameController.dispose();
     _serverController.dispose();
     _namespaceController.dispose();
     _caCertController.dispose();
@@ -40,13 +43,23 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
   }
 
   Future<void> _save() async {
+    final name = _nameController.text.trim();
     final server = _serverController.text.trim();
-    if (server.isEmpty) return;
+    if (name.isEmpty || server.isEmpty) return;
+    final clusterState = context.read<ClusterState>();
+    final nameTaken = clusterState.availableConfigs.any((c) => c.id != widget.config.id && c.name == name);
+    if (nameTaken) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Another cluster is already called "$name".'), backgroundColor: LensTheme.statusRed),
+      );
+      return;
+    }
     final ns = _namespaceController.text.trim();
     final ca = _caCertController.text.trim();
     setState(() => _saving = true);
     final updated = KubeConfig(
-      name: widget.config.name,
+      id: widget.config.id,
+      name: name,
       server: server,
       token: widget.config.token,
       caCert: ca.isEmpty ? null : ca,
@@ -55,7 +68,7 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
       defaultNamespace: ns.isEmpty ? 'default' : ns,
       insecureSkipTlsVerify: !_verifyTls,
     );
-    await context.read<ClusterState>().updateConfig(updated);
+    await clusterState.updateConfig(updated);
     if (!mounted) return;
     Navigator.pop(context);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved "${updated.name}"')));
@@ -82,7 +95,7 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    await context.read<ClusterState>().deleteConfig(widget.config.storageKey);
+    await context.read<ClusterState>().deleteConfig(widget.config.id);
     if (!mounted) return;
     Navigator.pop(context);
   }
@@ -112,6 +125,11 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          TextField(
+            controller: _nameController,
+            decoration: const InputDecoration(labelText: 'Display name'),
+          ),
+          const SizedBox(height: 10),
           TextField(
             controller: _serverController,
             decoration: const InputDecoration(labelText: 'Kubernetes API server URL'),

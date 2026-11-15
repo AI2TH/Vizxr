@@ -65,9 +65,55 @@ users:
       var list = await KubeConfig.loadConfigs();
       expect(list.any((c) => c.name == 'test-cloud'), isTrue);
 
-      await KubeConfig.deleteConfig('test-cloud');
+      await KubeConfig.deleteConfig(custom.id);
       list = await KubeConfig.loadConfigs();
       expect(list.any((c) => c.name == 'test-cloud'), isFalse);
+    });
+
+    test('two kubeconfigs with the same context name are kept apart', () async {
+      final a = KubeConfig(name: 'default', server: 'https://10.0.0.1:6443', token: 'a');
+      final b = KubeConfig(name: 'default', server: 'https://10.0.0.2:6443', token: 'b');
+      expect(a.id, isNot(equals(b.id)));
+      await KubeConfig.saveConfig(a);
+      await KubeConfig.saveConfig(b);
+
+      final list = await KubeConfig.loadConfigs();
+      final defaults = list.where((c) => c.name == 'default').toList();
+      expect(defaults, hasLength(2));
+      expect(defaults.map((c) => c.token).toSet(), {'a', 'b'});
+    });
+
+    test('renaming keeps the id and credentials', () async {
+      final a = KubeConfig(name: 'default', server: 'https://10.0.0.1:6443', token: 'a');
+      await KubeConfig.saveConfig(a);
+      await KubeConfig.saveConfig(a.copyWith(name: 'home-lab'));
+
+      final list = await KubeConfig.loadConfigs();
+      expect(list.where((c) => c.id == a.id), hasLength(1));
+      final renamed = list.firstWhere((c) => c.id == a.id);
+      expect(renamed.name, 'home-lab');
+      expect(renamed.token, 'a');
+    });
+
+    test('uniqueName adds a numeric suffix', () {
+      expect(KubeConfig.uniqueName('default', []), 'default');
+      expect(KubeConfig.uniqueName('default', ['default']), 'default (2)');
+      expect(KubeConfig.uniqueName('default', ['default', 'default (2)']), 'default (3)');
+    });
+
+    test('configs saved without an id get one, and their credentials follow', () async {
+      SharedPreferences.setMockInitialValues({
+        'vizxr_kubeconfigs': [
+          '{"name":"old","server":"https://10.0.0.9:6443","token":"t-old","defaultNamespace":"default","insecureSkipTlsVerify":false}',
+        ],
+      });
+      final first = (await KubeConfig.loadConfigs()).firstWhere((c) => c.name == 'old');
+      expect(first.id, isNotEmpty);
+      expect(first.token, 't-old');
+
+      final second = (await KubeConfig.loadConfigs()).firstWhere((c) => c.name == 'old');
+      expect(second.id, first.id);
+      expect(second.token, 't-old');
     });
   });
 }

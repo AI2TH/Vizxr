@@ -178,7 +178,7 @@ class ClusterDrawer extends StatelessWidget {
                 itemCount: clusterState.availableConfigs.length,
                 itemBuilder: (context, index) {
                   final config = clusterState.availableConfigs[index];
-                  final isActive = clusterState.activeConfig?.name == config.name;
+                  final isActive = clusterState.activeConfig?.id == config.id;
                   final isDemoItem = K8sClientService.isDemoServer(config.server);
 
                   return Container(
@@ -369,8 +369,7 @@ class ClusterDrawer extends StatelessWidget {
                       Navigator.pop(context);
                       final detected = await KubeConfig.autoDetectLinxrKubeconfig();
                       if (detected != null) {
-                        await clusterState.refreshConfigs();
-                        await clusterState.setConfig(detected);
+                        await clusterState.addConfig(detected);
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(content: Text('Imported cluster: ${detected.name}')),
                         );
