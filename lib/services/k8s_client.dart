@@ -59,6 +59,24 @@ class ManifestApplyResult {
   });
 }
 
+/// An error response from the Kubernetes API server.
+class K8sApiException extends HttpException {
+  final int statusCode;
+
+  const K8sApiException(this.statusCode, String message, {Uri? uri}) : super(message, uri: uri);
+
+  /// Builds the exception from a response, using the `message` of a
+  /// Kubernetes `Status` body when there is one.
+  factory K8sApiException.fromResponse(int statusCode, String body, Uri uri) {
+    var detail = body;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['message'] != null) detail = decoded['message'].toString();
+    } catch (_) {}
+    return K8sApiException(statusCode, 'HTTP $statusCode: $detail', uri: uri);
+  }
+}
+
 class K8sResource {
   final String name;
   final String namespace;
@@ -1010,33 +1028,60 @@ master:
     ),
   ];
 
-  Future<dynamic> _request(String method, String endpoint, {dynamic body}) async {
-    dynamic lastError;
+  /// Sends one API request.
+  ///
+  /// The loopback / VM fallback URLs are only tried when the connection
+  /// itself fails. Once a server has answered, its HTTP error is thrown
+  /// as-is: retrying a POST or DELETE elsewhere could apply it twice and
+  /// would hide the real error (403, 409, 422...) behind a connect error.
+  Future<dynamic> _request(
+    String method,
+    String endpoint, {
+    dynamic body,
+    String? contentType,
+  }) async {
+    final client = _httpClient;
+    if (client == null) throw StateError('Kubernetes client is closed');
+    Object? lastError;
     final candidates = _candidateBaseUrls;
 
     for (final base in candidates) {
+      final uri = Uri.parse('$base$endpoint');
+      HttpClientResponse? resp;
       try {
-        final uri = Uri.parse('$base$endpoint');
-        final req = await _httpClient!.openUrl(method, uri).timeout(const Duration(seconds: 3));
+        final req = await client.openUrl(method, uri).timeout(const Duration(seconds: 5));
         req.headers.set('Accept', 'application/json');
         if (token != null && token!.isNotEmpty) {
           req.headers.set('Authorization', 'Bearer $token');
         }
         if (body != null) {
-          req.headers.set('Content-Type', 'application/json');
-          req.add(utf8.encode(jsonEncode(body)));
+          // PATCH needs a patch media type; plain application/json gets 415.
+          req.headers.set(
+            'Content-Type',
+            contentType ?? (method == 'PATCH' ? 'application/merge-patch+json' : 'application/json'),
+          );
+          req.add(utf8.encode(body is String ? body : jsonEncode(body)));
         }
-        final resp = await req.close().timeout(const Duration(seconds: 3));
-        final respBody = await resp.transform(utf8.decoder).join();
-        if (resp.statusCode >= 200 && resp.statusCode < 300) {
-          _workingBaseUrl = base;
-          if (respBody.trim().isEmpty) return {};
-          return jsonDecode(respBody);
-        }
-        throw HttpException('HTTP ${resp.statusCode}: $respBody', uri: uri);
-      } catch (e) {
+        resp = await req.close().timeout(const Duration(seconds: 30));
+      } on SocketException catch (e) {
         lastError = e;
+        continue;
+      } on TimeoutException catch (e) {
+        lastError = e;
+        continue;
+      } on HandshakeException catch (e) {
+        lastError = e;
+        continue;
       }
+      if (resp == null) continue;
+
+      final respBody = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        _workingBaseUrl = base;
+        if (respBody.trim().isEmpty) return <String, dynamic>{};
+        return jsonDecode(respBody);
+      }
+      throw K8sApiException.fromResponse(resp.statusCode, respBody, uri);
     }
     throw lastError ?? Exception('Failed request to $endpoint across $candidates');
   }
@@ -1252,8 +1297,6 @@ master:
       initContainers: initContainers,
       labels: labels,
       annotations: annotations,
-      cpuUsage: 0.1,
-      memUsage: 64.0,
     );
   }
 
@@ -1300,12 +1343,19 @@ master:
       final apiVersion = manifest['apiVersion']?.toString() ?? 'v1';
       final metadata = (manifest['metadata'] as Map<String, dynamic>?) ?? {};
       final name = metadata['name']?.toString();
-      String namespace = metadata['namespace']?.toString() ?? (targetNamespace ?? 'default');
-      if (namespace == 'all-namespaces') namespace = 'default';
-      manifest['metadata'] = {...metadata, 'name': name, 'namespace': namespace};
-
       if (kind == null || name == null) {
         return ManifestApplyResult(success: false, message: 'Manifest missing "kind" or "metadata.name"');
+      }
+
+      final clusterScoped = isClusterScopedKind(kind);
+      String namespace = clusterScoped
+          ? 'none'
+          : (metadata['namespace']?.toString() ?? (targetNamespace ?? 'default'));
+      if (namespace == 'all-namespaces') namespace = 'default';
+      if (clusterScoped) {
+        manifest['metadata'] = {...metadata}..remove('namespace');
+      } else {
+        manifest['metadata'] = {...metadata, 'name': name, 'namespace': namespace};
       }
 
       // If Demo mode, apply manifest directly to _mockStore or _mockCustomResources
@@ -1359,9 +1409,9 @@ master:
           message: '$kind "$name" created successfully in namespace "$namespace"',
           resource: created,
         );
-      } on HttpException catch (e) {
-        // If 409 Conflict (Already exists), execute PUT or PATCH (Update)
-        if (e.message.contains('409')) {
+      } on K8sApiException catch (e) {
+        // 409 Conflict means it already exists: replace it with PUT.
+        if (e.statusCode == 409) {
           final resp = await _request('PUT', resourcePath, body: manifest);
           final updated = _parseResource(resType, resp);
           return ManifestApplyResult(
@@ -1461,25 +1511,62 @@ master:
           'type': K8sResourceType.customResourceDefinition,
         };
       default:
-        if (apiVersion.contains('/')) {
-          final parts = apiVersion.split('/');
-          final group = parts[0];
-          final version = parts[1];
-          final plural = kind.toLowerCase().endsWith('s') ? kind.toLowerCase() : '${kind.toLowerCase()}s';
-          final isCluster = (namespace == 'none' || namespace.isEmpty || namespace == 'all-namespaces');
-          final coll = isCluster ? '/apis/$group/$version/$plural' : '/apis/$group/$version/namespaces/$namespace/$plural';
-          return {
-            'collectionPath': coll,
-            'resourcePath': '$coll/$name',
-            'type': K8sResourceType.customResource,
-          };
-        }
+        // Any other kind: build the REST path from apiVersion and kind.
+        // Core kinds (apiVersion "v1") live under /api/v1, the rest under
+        // /apis/<group>/<version>. Previously an unknown core kind such as
+        // Namespace or ServiceAccount was POSTed to the pods endpoint.
+        final prefix = apiVersion.contains('/') ? '/apis/$apiVersion' : '/api/$apiVersion';
+        final plural = pluralizeKind(kind);
+        final isCluster = isClusterScopedKind(kind) ||
+            namespace == 'none' ||
+            namespace.isEmpty ||
+            namespace == 'all-namespaces';
+        final coll = isCluster ? '$prefix/$plural' : '$prefix/namespaces/$namespace/$plural';
         return {
-          'collectionPath': '/api/v1/namespaces/$namespace/pods',
-          'resourcePath': '/api/v1/namespaces/$namespace/pods/$name',
-          'type': K8sResourceType.pod,
+          'collectionPath': coll,
+          'resourcePath': '$coll/$name',
+          'type': _typeFromKind(kind),
         };
     }
+  }
+
+  static const Set<String> _clusterScopedKinds = {
+    'namespace',
+    'node',
+    'persistentvolume',
+    'clusterrole',
+    'clusterrolebinding',
+    'storageclass',
+    'customresourcedefinition',
+    'priorityclass',
+    'ingressclass',
+    'runtimeclass',
+    'csidriver',
+    'csinode',
+    'volumeattachment',
+    'mutatingwebhookconfiguration',
+    'validatingwebhookconfiguration',
+    'validatingadmissionpolicy',
+    'validatingadmissionpolicybinding',
+    'apiservice',
+    'certificatesigningrequest',
+    'clusterissuer',
+    'volumesnapshotclass',
+  };
+
+  /// Whether a built-in or well-known kind is cluster-scoped.
+  static bool isClusterScopedKind(String kind) => _clusterScopedKinds.contains(kind.toLowerCase());
+
+  /// Lower-case plural resource name for a kind, following the English rules
+  /// Kubernetes uses (NetworkPolicy -> networkpolicies, Ingress -> ingresses).
+  static String pluralizeKind(String kind) {
+    final k = kind.toLowerCase();
+    if (k == 'endpoints') return k;
+    if (k.endsWith('s') || k.endsWith('x') || k.endsWith('ch') || k.endsWith('sh')) return '${k}es';
+    if (k.length > 1 && k.endsWith('y') && !'aeiou'.contains(k[k.length - 2])) {
+      return '${k.substring(0, k.length - 1)}ies';
+    }
+    return '${k}s';
   }
 
   K8sResourceType _typeFromKind(String kind) {
@@ -1576,7 +1663,9 @@ master:
         break;
     }
 
-    if (path.isEmpty) return;
+    if (path.isEmpty) {
+      throw UnsupportedError('Use deleteCustomResource() for custom resources');
+    }
 
     final body = force ? {'gracePeriodSeconds': 0, 'propagationPolicy': 'Background'} : null;
     await _request('DELETE', path, body: body);
@@ -1789,17 +1878,17 @@ master:
 
   Future<void> restartDeployment(String name, String namespace) async {
     if (isDemo) return;
-    try {
-      await _request('PATCH', '/apis/apps/v1/namespaces/$namespace/deployments/$name', body: {
-        'spec': {
-          'template': {
-            'metadata': {
-              'annotations': {'kubectl.kubernetes.io/restartedAt': DateTime.now().toIso8601String()}
-            }
+    // Same patch as `kubectl rollout restart`. Errors propagate so the UI does
+    // not report a restart that never happened.
+    await _request('PATCH', '/apis/apps/v1/namespaces/$namespace/deployments/$name', body: {
+      'spec': {
+        'template': {
+          'metadata': {
+            'annotations': {'kubectl.kubernetes.io/restartedAt': DateTime.now().toUtc().toIso8601String()}
           }
         }
-      });
-    } catch (_) {}
+      }
+    });
   }
 
   Future<String> fetchPodLogs(

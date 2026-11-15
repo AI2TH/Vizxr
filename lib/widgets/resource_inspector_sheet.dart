@@ -215,11 +215,18 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                       label: 'Restart',
                       color: LensTheme.purpleAccent,
                       onTap: () async {
-                        await clusterState.client.restartDeployment(_res.name, _res.namespace);
-                        widget.onResourceChanged?.call();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Triggered rolling restart for ${_res.name}')),
-                        );
+                        final messenger = ScaffoldMessenger.of(context);
+                        try {
+                          await clusterState.client.restartDeployment(_res.name, _res.namespace);
+                          widget.onResourceChanged?.call();
+                          messenger.showSnackBar(
+                            SnackBar(content: Text('Triggered rolling restart for ${_res.name}')),
+                          );
+                        } catch (e) {
+                          messenger.showSnackBar(
+                            SnackBar(content: Text('Restart failed: $e'), backgroundColor: LensTheme.statusRed),
+                          );
+                        }
                       },
                     ),
                   ],
@@ -840,7 +847,25 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
             onPressed: () async {
               Navigator.pop(ctx);
               final clusterState = context.read<ClusterState>();
-              await clusterState.client.deleteResource(_res.type, _res.name, _res.namespace);
+              final messenger = ScaffoldMessenger.of(context);
+              try {
+                if (_res.type == K8sResourceType.customResource) {
+                  await clusterState.client.deleteCustomResource(
+                    group: _res.annotations['group'] ?? '',
+                    version: _res.annotations['version'] ?? 'v1',
+                    plural: _res.annotations['plural'] ?? '',
+                    name: _res.name,
+                    namespace: _res.namespace,
+                  );
+                } else {
+                  await clusterState.client.deleteResource(_res.type, _res.name, _res.namespace);
+                }
+              } catch (e) {
+                messenger.showSnackBar(
+                  SnackBar(content: Text('Delete failed: $e'), backgroundColor: LensTheme.statusRed),
+                );
+                return;
+              }
               widget.onResourceChanged?.call();
               if (mounted) {
                 Navigator.pop(context);
