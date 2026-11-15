@@ -73,6 +73,15 @@ class ManifestApplyResult {
   });
 }
 
+/// The pod and container port behind a Service port, for port forwarding.
+class PortForwardTarget {
+  final String podName;
+  final int containerPort;
+  final int servicePort;
+
+  const PortForwardTarget({required this.podName, required this.containerPort, required this.servicePort});
+}
+
 /// An error response from the Kubernetes API server.
 class K8sApiException extends HttpException {
   final int statusCode;
@@ -2023,6 +2032,75 @@ master:
       compression: CompressionOptions.compressionOff,
       customClient: client,
     ).timeout(const Duration(seconds: 15));
+  }
+
+  /// Resolves a Service port to a running pod and container port, like
+  /// `kubectl port-forward svc/NAME`: list pods matching the selector, take a
+  /// Running one, and map `targetPort` (a number or a named container port).
+  Future<PortForwardTarget> resolveServicePortForward(K8sResource service, {int? servicePort}) async {
+    final spec = service.rawYaml['spec'] is Map ? service.rawYaml['spec'] as Map : const {};
+    final selector = spec['selector'] is Map ? spec['selector'] as Map : const {};
+    if (selector.isEmpty) {
+      throw StateError('Service ${service.name} has no selector, so it has no pods to forward to');
+    }
+    final ports = spec['ports'] is List ? spec['ports'] as List : const [];
+    Map portSpec = const {};
+    for (final p in ports) {
+      if (p is Map && (servicePort == null || p['port'] == servicePort)) {
+        portSpec = p;
+        break;
+      }
+    }
+    if (portSpec.isEmpty) throw StateError('Service ${service.name} has no matching port');
+    final svcPort = (portSpec['port'] as num?)?.toInt() ?? 0;
+
+    final labelSelector = selector.entries.map((e) => '${e.key}=${e.value}').join(',');
+    final json = await _request(
+      'GET',
+      '/api/v1/namespaces/${service.namespace}/pods?labelSelector=${Uri.encodeQueryComponent(labelSelector)}',
+    );
+    Map? pod;
+    for (final item in (json['items'] as List?) ?? const []) {
+      if (item is! Map) continue;
+      final phase = item['status'] is Map ? (item['status'] as Map)['phase'] : null;
+      final deleting = item['metadata'] is Map && (item['metadata'] as Map)['deletionTimestamp'] != null;
+      if (phase == 'Running' && !deleting) {
+        pod = item;
+        break;
+      }
+    }
+    if (pod == null) throw StateError('No running pod matches service ${service.name}');
+
+    final targetPort = portSpec['targetPort'] ?? svcPort;
+    int? containerPort;
+    if (targetPort is num) {
+      containerPort = targetPort.toInt();
+    } else {
+      final asInt = int.tryParse(targetPort.toString());
+      if (asInt != null) {
+        containerPort = asInt;
+      } else {
+        // Named port: look it up in the pod's containers.
+        final podSpec = pod['spec'] is Map ? pod['spec'] as Map : const {};
+        for (final c in (podSpec['containers'] as List?) ?? const []) {
+          for (final p in (c is Map ? c['ports'] as List? : null) ?? const []) {
+            if (p is Map && p['name'] == targetPort) {
+              containerPort = (p['containerPort'] as num?)?.toInt();
+            }
+          }
+        }
+      }
+    }
+    if (containerPort == null) {
+      throw StateError('Could not resolve target port "$targetPort" of service ${service.name}');
+    }
+
+    final meta = pod['metadata'] is Map ? pod['metadata'] as Map : const {};
+    return PortForwardTarget(
+      podName: meta['name']?.toString() ?? '',
+      containerPort: containerPort,
+      servicePort: svcPort,
+    );
   }
 
   /// Cluster-wide CPU and memory: allocatable from `/api/v1/nodes`, usage

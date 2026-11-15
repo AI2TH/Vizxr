@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'kubeconfig.dart';
 import 'k8s_client.dart';
+import 'port_forward_service.dart';
 
 class ClusterState extends ChangeNotifier {
   KubeConfig? _activeConfig;
@@ -50,6 +51,8 @@ class ClusterState extends ChangeNotifier {
     final clientKey = _activeConfig?.clientKeyData;
     final insecure = _activeConfig?.insecureSkipTlsVerify ?? false;
 
+    // Tunnels use the old client's credentials; stop them with it.
+    PortForwardService.stopAll();
     _activeClient.close();
     _activeClient = K8sClientService(
       baseUrl: server,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
@@ -164,6 +165,40 @@ class _ServicesListViewState extends State<_ServicesListView> {
     );
   }
 
+  /// Resolves the service's first port to a running pod and starts a real
+  /// tunnel through the portforward subresource.
+  Future<void> _startServiceForward(BuildContext context, K8sResource svc) async {
+    final clusterState = context.read<ClusterState>();
+    final messenger = ScaffoldMessenger.of(context);
+    if (clusterState.isDemo) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Port forwarding needs a live cluster; the demo cluster has no real pods.')),
+      );
+      return;
+    }
+    try {
+      final client = clusterState.client;
+      final target = await client.resolveServicePortForward(svc);
+      final forward = await PortForwardService.startForward(
+        client: client,
+        namespace: svc.namespace,
+        podName: target.podName,
+        containerPort: target.containerPort,
+        localPort: PortForwardService.preferredLocalPort(target.servicePort),
+        label: 'svc/${svc.name}:${target.servicePort}',
+      );
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Forwarding ${forward.localUrl} -> ${target.podName}:${target.containerPort}'),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Port forward failed: $e'), backgroundColor: LensTheme.statusRed),
+      );
+    }
+  }
+
   Widget _buildServiceCard(BuildContext context, K8sResource svc) {
     final spec = (svc.rawYaml['spec'] as Map?) ?? {};
     final type = spec['type']?.toString() ?? svc.status;
@@ -251,13 +286,7 @@ class _ServicesListViewState extends State<_ServicesListView> {
           Row(
             children: [
               InkWell(
-                onTap: () {
-                  final targetPort = ports.isNotEmpty && ports.first is Map ? (ports.first['port'] as int? ?? 80) : 80;
-                  PortForwardService.startForward(svc.name, targetPort, targetPort);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Port forward started: localhost:$targetPort -> ${svc.name}:$targetPort')),
-                  );
-                },
+                onTap: () => _startServiceForward(context, svc),
                 borderRadius: BorderRadius.circular(6),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -403,6 +432,13 @@ class _PortForwardsView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: PortForwardService.changes,
+      builder: (context, _, __) => _buildList(context),
+    );
+  }
+
+  Widget _buildList(BuildContext context) {
     final forwards = PortForwardService.activeForwards;
 
     if (forwards.isEmpty) {
@@ -415,7 +451,7 @@ class _PortForwardsView extends StatelessWidget {
             const Text('No active port forwards.', style: TextStyle(color: LensTheme.textMuted, fontSize: 13)),
             const SizedBox(height: 6),
             const Text(
-              'Tap "Port Forward" on any Service or Pod to route traffic to your device.',
+              'Tap "Port Forward" on a Service to reach it from this device.',
               textAlign: TextAlign.center,
               style: TextStyle(color: LensTheme.textMuted, fontSize: 11),
             ),
@@ -429,12 +465,15 @@ class _PortForwardsView extends StatelessWidget {
       itemCount: forwards.length,
       itemBuilder: (context, index) {
         final f = forwards[index];
+        final statusText = f.isActive
+            ? 'Listening on 127.0.0.1:${f.localPort} • ${f.openConnections} open, ${f.totalConnections} total'
+            : 'Stopped';
         return Container(
           margin: const EdgeInsets.symmetric(vertical: 6),
           padding: const EdgeInsets.all(14),
           decoration: LensTheme.cardDecoration(
             borderColor: LensTheme.cyanAccent.withOpacity(0.4),
-            glow: true,
+            glow: f.isActive,
             radius: 14,
           ),
           child: Row(
@@ -446,20 +485,43 @@ class _PortForwardsView extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'localhost:${f.localPort} -> ${f.podName}:${f.containerPort}',
+                      'localhost:${f.localPort} -> ${f.label}',
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: LensTheme.textPrimary, fontFamily: 'monospace'),
                     ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'pod ${f.namespace}/${f.podName}:${f.containerPort}',
+                      style: const TextStyle(fontSize: 11, color: LensTheme.textSecondary, fontFamily: 'monospace'),
+                    ),
                     const SizedBox(height: 4),
-                    const Text('Status: Active Tunnel (Hostfwd)', style: TextStyle(fontSize: 11, color: LensTheme.statusGreen)),
+                    Text(
+                      statusText,
+                      style: TextStyle(fontSize: 11, color: f.isActive ? LensTheme.statusGreen : LensTheme.textMuted),
+                    ),
+                    if (f.lastError != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Last error: ${f.lastError}',
+                        style: const TextStyle(fontSize: 11, color: LensTheme.statusRed),
+                      ),
+                    ],
                   ],
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.stop_circle_outlined, color: LensTheme.statusRed),
+                icon: const Icon(Icons.copy_rounded, color: LensTheme.textSecondary, size: 18),
+                tooltip: 'Copy URL',
                 onPressed: () {
-                  PortForwardService.stopForward(f);
-                  (context as Element).markNeedsBuild();
+                  Clipboard.setData(ClipboardData(text: f.localUrl));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Copied ${f.localUrl}')),
+                  );
                 },
+              ),
+              IconButton(
+                icon: const Icon(Icons.stop_circle_outlined, color: LensTheme.statusRed),
+                tooltip: 'Stop',
+                onPressed: () => PortForwardService.stopForward(f),
               ),
             ],
           ),
