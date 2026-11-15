@@ -24,6 +24,12 @@ enum K8sResourceType {
 }
 
 class HelmRelease {
+  /// A release installed with the helm CLI (Helm v3 storage Secret).
+  static const String sourceHelm = 'Helm';
+
+  /// A k3s helm-controller `HelmChart` object (helm.cattle.io/v1).
+  static const String sourceK3s = 'k3s HelmChart';
+
   final String name;
   final String namespace;
   final String chart;
@@ -34,6 +40,8 @@ class HelmRelease {
   final String updated;
   final Map<String, dynamic> values;
   final String valuesYaml;
+  final String source;
+  final String description;
 
   HelmRelease({
     required this.name,
@@ -46,7 +54,11 @@ class HelmRelease {
     required this.updated,
     this.values = const {},
     this.valuesYaml = '',
+    this.source = sourceHelm,
+    this.description = '',
   });
+
+  bool get isK3sHelmChart => source == sourceK3s;
 }
 
 class ManifestApplyResult {
@@ -2102,7 +2114,7 @@ master:
 
     final List<HelmRelease> releases = [];
 
-    // 1. Check K3s native HelmChart custom resources (helm.cattle.io/v1)
+    // 1. k3s helm-controller HelmChart objects (helm.cattle.io/v1).
     try {
       final path = ns != null
           ? '/apis/helm.cattle.io/v1/namespaces/$ns/helmcharts'
@@ -2113,22 +2125,27 @@ master:
         for (final item in items) {
           final meta = item['metadata'] as Map<String, dynamic>? ?? {};
           final spec = item['spec'] as Map<String, dynamic>? ?? {};
+          final conditions = item['status'] is Map ? (item['status'] as Map)['conditions'] : null;
+          final failed = conditions is List &&
+              conditions.any((c) => c is Map && c['type'] == 'Failed' && c['status'] == 'True');
           releases.add(HelmRelease(
             name: meta['name']?.toString() ?? '',
             namespace: meta['namespace']?.toString() ?? 'default',
             chart: spec['chart']?.toString() ?? meta['name']?.toString() ?? '',
             version: spec['version']?.toString() ?? 'latest',
-            appVersion: spec['version']?.toString() ?? '1.0',
+            appVersion: spec['version']?.toString() ?? '',
             revision: 1,
-            status: item['status']?['jobStatus']?.toString() ?? 'deployed',
+            status: failed ? 'failed' : 'applied',
             updated: _calculateAge(meta['creationTimestamp']?.toString()),
             valuesYaml: spec['valuesContent']?.toString() ?? '',
+            source: HelmRelease.sourceK3s,
           ));
         }
       }
     } catch (_) {}
 
-    // 2. Check standard Helm v3 release secrets (owner=helm)
+    // 2. Helm v3 releases, stored as Secrets labelled owner=helm with one
+    //    Secret per revision. Keep the latest revision of each release.
     try {
       final path = ns != null
           ? '/api/v1/namespaces/$ns/secrets?labelSelector=owner%3Dhelm'
@@ -2136,30 +2153,75 @@ master:
       final json = await _request('GET', path);
       final items = json['items'] as List?;
       if (items != null) {
+        final latest = <String, Map>{};
+        final latestRevision = <String, int>{};
         for (final item in items) {
-          final meta = item['metadata'] as Map<String, dynamic>? ?? {};
-          final labels = meta['labels'] as Map<String, dynamic>? ?? {};
-          final name = labels['name']?.toString() ?? meta['name']?.toString() ?? '';
-          final version = int.tryParse(labels['version']?.toString() ?? '1') ?? 1;
-          final status = labels['status']?.toString() ?? 'deployed';
-          final relNs = meta['namespace']?.toString() ?? 'default';
-          if (!releases.any((r) => r.name == name && r.namespace == relNs)) {
-            releases.add(HelmRelease(
-              name: name,
-              namespace: relNs,
-              chart: name,
-              version: 'v$version',
-              appVersion: '1.0',
-              revision: version,
-              status: status,
-              updated: _calculateAge(meta['creationTimestamp']?.toString()),
-            ));
+          if (item is! Map || item['type'] != 'helm.sh/release.v1') continue;
+          final meta = item['metadata'] is Map ? item['metadata'] as Map : const {};
+          final labels = meta['labels'] is Map ? meta['labels'] as Map : const {};
+          final key = '${meta['namespace']}/${labels['name'] ?? meta['name']}';
+          final revision = int.tryParse(labels['version']?.toString() ?? '') ?? 0;
+          if (!latest.containsKey(key) || revision > latestRevision[key]!) {
+            latest[key] = item;
+            latestRevision[key] = revision;
           }
+        }
+        for (final secret in latest.values) {
+          final release = decodeHelmReleaseSecret(secret);
+          if (release != null) releases.add(release);
         }
       }
     } catch (_) {}
 
+    releases.sort((a, b) {
+      final byNs = a.namespace.compareTo(b.namespace);
+      return byNs != 0 ? byNs : a.name.compareTo(b.name);
+    });
     return releases;
+  }
+
+  /// Decodes a Helm v3 storage Secret (type helm.sh/release.v1).
+  ///
+  /// `data.release` is base64 (Secret encoding) of base64 (Helm's encoding)
+  /// of a gzipped JSON release. Returns null when it cannot be decoded.
+  static HelmRelease? decodeHelmReleaseSecret(Map secret) {
+    try {
+      final data = secret['data'];
+      if (data is! Map || data['release'] == null) return null;
+      final helmEncoded = utf8.decode(base64Decode(data['release'].toString().trim()));
+      List<int> payload = base64Decode(helmEncoded.trim());
+      if (payload.length > 2 && payload[0] == 0x1f && payload[1] == 0x8b) {
+        payload = gzip.decode(payload);
+      }
+      final json = jsonDecode(utf8.decode(payload));
+      if (json is! Map) return null;
+
+      final info = json['info'] is Map ? json['info'] as Map : const {};
+      final chart = json['chart'] is Map ? json['chart'] as Map : const {};
+      final chartMeta = chart['metadata'] is Map ? chart['metadata'] as Map : const {};
+      final config = json['config'] is Map
+          ? Map<String, dynamic>.from(json['config'] as Map)
+          : <String, dynamic>{};
+      final lastDeployed = info['last_deployed']?.toString() ?? '';
+
+      return HelmRelease(
+        name: json['name']?.toString() ?? '',
+        namespace: json['namespace']?.toString() ?? 'default',
+        chart: chartMeta['name']?.toString() ?? '',
+        version: chartMeta['version']?.toString() ?? '',
+        appVersion: chartMeta['appVersion']?.toString() ?? '',
+        revision: (json['version'] as num?)?.toInt() ?? 1,
+        status: info['status']?.toString() ?? 'unknown',
+        updated: lastDeployed.length >= 19 ? lastDeployed.substring(0, 19).replaceFirst('T', ' ') : lastDeployed,
+        values: config,
+        // JSON is valid YAML, and package:yaml has no writer.
+        valuesYaml: config.isEmpty ? '' : const JsonEncoder.withIndent('  ').convert(config),
+        source: HelmRelease.sourceHelm,
+        description: info['description']?.toString() ?? '',
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<ManifestApplyResult> installHelmRelease({
@@ -2213,12 +2275,20 @@ master:
   Future<ManifestApplyResult> uninstallHelmRelease({
     required String name,
     required String namespace,
+    String source = HelmRelease.sourceK3s,
   }) async {
     if (isDemo) {
       _mockHelmReleases.removeWhere((r) => r.name == name && r.namespace == namespace);
       return ManifestApplyResult(
         success: true,
         message: 'Helm release "$name" uninstalled successfully.',
+      );
+    }
+
+    if (source != HelmRelease.sourceK3s) {
+      return ManifestApplyResult(
+        success: false,
+        message: 'Helm v3 releases are read-only in Vizxr. Run "helm uninstall $name -n $namespace".',
       );
     }
 
@@ -2258,9 +2328,12 @@ master:
       );
     }
 
+    // Neither source supports a safe rollback over raw REST: Helm v3 rollback
+    // needs the Helm SDK (re-render and three-way merge), and a k3s HelmChart
+    // has no revision history. Do not report a rollback that never happened.
     return ManifestApplyResult(
-      success: true,
-      message: 'Rollback request dispatched for "$name".',
+      success: false,
+      message: 'Rollback is not supported from Vizxr. Run "helm rollback $name $targetRevision -n $namespace".',
     );
   }
 }

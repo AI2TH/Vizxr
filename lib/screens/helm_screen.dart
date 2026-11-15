@@ -655,7 +655,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
                       const Icon(Icons.check_circle_outline_rounded, size: 16, color: LensTheme.statusGreen),
                       const SizedBox(width: 6),
                       Text(
-                        '${releases.length} Release${releases.length == 1 ? '' : 's'} Deployed',
+                        '${releases.length} Release${releases.length == 1 ? '' : 's'}',
                         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
                       ),
                     ],
@@ -710,6 +710,12 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
     ClusterState clusterState,
     HelmRelease rel,
   ) {
+    final isDemo = clusterState.isDemo;
+    // Live clusters: Helm v3 releases are read-only (rollback/uninstall need
+    // the Helm SDK); a k3s HelmChart can be deleted but has no rollback.
+    final canRollback = isDemo;
+    final canUninstall = isDemo || rel.isK3sHelmChart;
+    final sourceColor = rel.isK3sHelmChart ? LensTheme.statusAmber : LensTheme.k8sBlue;
     Color statusColor = LensTheme.statusGreen;
     if (rel.status.toLowerCase().contains('fail')) {
       statusColor = LensTheme.statusRed;
@@ -777,6 +783,19 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
+                    color: sourceColor.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: sourceColor.withOpacity(0.4)),
+                  ),
+                  child: Text(
+                    rel.source,
+                    style: TextStyle(fontSize: 10, color: sourceColor, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
                     color: LensTheme.bgDark,
                     borderRadius: BorderRadius.circular(4),
                     border: Border.all(color: LensTheme.borderSubtle),
@@ -786,18 +805,25 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
                     style: const TextStyle(fontSize: 10, color: LensTheme.purpleAccent, fontFamily: 'monospace'),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  'Chart: ${rel.chart}-${rel.version}',
-                  style: const TextStyle(fontSize: 11, color: LensTheme.textMuted, fontFamily: 'monospace'),
-                ),
               ],
             ),
             const SizedBox(height: 6),
             Text(
-              'Updated: ${rel.updated}',
+              'Chart: ${rel.chart}-${rel.version}${rel.appVersion.isNotEmpty ? '  (app ${rel.appVersion})' : ''}',
+              style: const TextStyle(fontSize: 11, color: LensTheme.textMuted, fontFamily: 'monospace'),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Updated: ${rel.updated}${rel.description.isNotEmpty ? ' • ${rel.description}' : ''}',
               style: const TextStyle(fontSize: 10, color: LensTheme.textMuted),
             ),
+            if (!isDemo && !rel.isK3sHelmChart) ...[
+              const SizedBox(height: 4),
+              const Text(
+                'Read-only: upgrade, roll back or uninstall this release with the helm CLI.',
+                style: TextStyle(fontSize: 10, color: LensTheme.statusAmber),
+              ),
+            ],
             const SizedBox(height: 12),
             const Divider(height: 1, color: LensTheme.borderSubtle),
             const SizedBox(height: 8),
@@ -820,11 +846,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
                           resourceName: '${rel.name} (Values)',
                           initialYaml: rel.valuesYaml.isNotEmpty
                               ? rel.valuesYaml
-                              : '''# Applied values for release: ${rel.name}
-chart: ${rel.chart}
-version: ${rel.version}
-replicaCount: 1
-''',
+                              : '# Release ${rel.name} has no user-supplied values (chart defaults only).\n',
                         ),
                       ),
                     );
@@ -839,14 +861,14 @@ replicaCount: 1
                     foregroundColor: LensTheme.statusAmber,
                     textStyle: const TextStyle(fontSize: 11),
                   ),
-                  onPressed: () => _confirmRollback(context, clusterState, rel),
+                  onPressed: canRollback ? () => _confirmRollback(context, clusterState, rel) : null,
                 ),
                 const SizedBox(width: 4),
                 // Uninstall
                 IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded, size: 18, color: LensTheme.statusRed),
-                  tooltip: 'Uninstall Release',
-                  onPressed: () => _confirmUninstall(context, clusterState, rel),
+                  icon: Icon(Icons.delete_outline_rounded, size: 18, color: canUninstall ? LensTheme.statusRed : LensTheme.textMuted),
+                  tooltip: canUninstall ? 'Uninstall Release' : 'Read-only: use helm uninstall',
+                  onPressed: canUninstall ? () => _confirmUninstall(context, clusterState, rel) : null,
                 ),
               ],
             ),
@@ -929,6 +951,7 @@ replicaCount: 1
               final res = await clusterState.client.uninstallHelmRelease(
                 name: rel.name,
                 namespace: rel.namespace,
+                source: rel.source,
               );
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(res.message)),
