@@ -109,4 +109,35 @@ metadata:
       expect(result.success, isTrue);
     });
   });
+
+  group('Custom resource paths', () {
+    test('cluster-scoped resources are deleted without a namespace segment', () {
+      // The UI namespace ("default") must not leak into the path.
+      expect(
+        K8sClientService.customResourcePath(
+          group: 'cert-manager.io',
+          version: 'v1',
+          plural: 'clusterissuers',
+          name: 'letsencrypt',
+          namespace: 'default',
+          clusterScoped: true,
+        ),
+        '/apis/cert-manager.io/v1/clusterissuers/letsencrypt',
+      );
+    });
+
+    test('namespaced resources keep their namespace', () {
+      expect(
+        K8sClientService.customResourcePath(
+          group: 'cert-manager.io',
+          version: 'v1',
+          plural: 'certificates',
+          name: 'web-tls',
+          namespace: 'shop',
+          clusterScoped: false,
+        ),
+        '/apis/cert-manager.io/v1/namespaces/shop/certificates/web-tls',
+      );
+    });
+  });
 }

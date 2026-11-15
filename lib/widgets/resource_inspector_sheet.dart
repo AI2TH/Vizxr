@@ -924,6 +924,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                     plural: _res.annotations['plural'] ?? '',
                     name: _res.name,
                     namespace: _res.namespace,
+                    clusterScoped: _res.annotations['scope']?.toLowerCase() == 'cluster',
                   );
                 } else {
                   await clusterState.client.deleteResource(_res.type, _res.name, _res.namespace);

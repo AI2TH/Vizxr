@@ -1780,11 +1780,28 @@ master:
   Future<List<K8sResource>> fetchCustomResourceDefinitions() =>
       fetchResources(K8sResourceType.customResourceDefinition);
 
+  /// REST path of one custom resource. Cluster-scoped resources have no
+  /// `namespaces/<ns>` segment, whatever namespace the UI is showing.
+  static String customResourcePath({
+    required String group,
+    required String version,
+    required String plural,
+    required String name,
+    required String namespace,
+    required bool clusterScoped,
+  }) {
+    final noNamespace = clusterScoped || namespace.isEmpty || namespace == 'none' || namespace == 'all-namespaces';
+    return noNamespace
+        ? '/apis/$group/$version/$plural/$name'
+        : '/apis/$group/$version/namespaces/$namespace/$plural/$name';
+  }
+
   Future<List<K8sResource>> fetchCustomResourceObjects({
     required String group,
     required String version,
     required String plural,
     String? namespace,
+    bool clusterScoped = false,
   }) async {
     final ns = (namespace == null || namespace == 'all-namespaces') ? null : namespace;
 
@@ -1812,6 +1829,7 @@ master:
           ann['group'] = group;
           ann['version'] = version;
           ann['plural'] = plural;
+          ann['scope'] = clusterScoped ? 'Cluster' : 'Namespaced';
           return parsed.copyWith(annotations: ann);
         }).toList();
       }
@@ -1825,6 +1843,7 @@ master:
     required String plural,
     required String name,
     required String namespace,
+    bool clusterScoped = false,
   }) async {
     if (isDemo) {
       _mockCustomResources.removeWhere((r) => r.name == name && (namespace == 'none' || r.namespace == namespace));
@@ -1843,9 +1862,14 @@ master:
       return;
     }
 
-    final path = (namespace.isEmpty || namespace == 'none' || namespace == 'all-namespaces')
-        ? '/apis/$group/$version/$plural/$name'
-        : '/apis/$group/$version/namespaces/$namespace/$plural/$name';
+    final path = customResourcePath(
+      group: group,
+      version: version,
+      plural: plural,
+      name: name,
+      namespace: namespace,
+      clusterScoped: clusterScoped,
+    );
     await _request('DELETE', path);
   }
 

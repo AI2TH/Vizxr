@@ -589,6 +589,7 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
         version: version,
         plural: plural,
         namespace: isNamespaced ? clusterState.currentNamespace : null,
+        clusterScoped: !isNamespaced,
       );
 
   void _refresh() => reload();
@@ -906,7 +907,9 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
           ],
         ),
         content: Text(
-          'Delete "$kind" named "${item.name}" from namespace "${item.namespace}"?',
+          isNamespaced
+              ? 'Delete "$kind" named "${item.name}" from namespace "${item.namespace}"?'
+              : 'Delete cluster-scoped "$kind" named "${item.name}"?',
           style: const TextStyle(fontSize: 13, color: LensTheme.textSecondary),
         ),
         actions: [
@@ -926,6 +929,7 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
                 plural: plural,
                 name: item.name,
                 namespace: item.namespace,
+                clusterScoped: !isNamespaced,
               );
               _refresh();
               if (mounted) {
