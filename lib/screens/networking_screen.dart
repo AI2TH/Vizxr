@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../services/port_forward_service.dart';
@@ -463,12 +464,17 @@ class _PortForwardsView extends StatelessWidget {
                 ),
               ),
               IconButton(
+                icon: const Icon(Icons.open_in_browser_rounded, color: LensTheme.cyanAccent, size: 20),
+                tooltip: 'Open in browser',
+                onPressed: f.isActive ? () => _openInBrowser(context, f) : null,
+              ),
+              IconButton(
                 icon: const Icon(Icons.copy_rounded, color: LensTheme.textSecondary, size: 18),
                 tooltip: 'Copy URL',
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: f.localUrl));
+                  Clipboard.setData(ClipboardData(text: f.browserUrl));
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Copied ${f.localUrl}')),
+                    SnackBar(content: Text('Copied ${f.browserUrl}')),
                   );
                 },
               ),
@@ -482,5 +488,16 @@ class _PortForwardsView extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _openInBrowser(BuildContext context, PortForward f) async {
+    final messenger = ScaffoldMessenger.of(context);
+    var opened = false;
+    try {
+      opened = await launchUrl(Uri.parse(f.browserUrl), mode: LaunchMode.externalApplication);
+    } catch (_) {}
+    if (!opened) {
+      messenger.showSnackBar(SnackBar(content: Text('No browser could open ${f.browserUrl}')));
+    }
   }
 }
