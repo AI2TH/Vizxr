@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
@@ -7,6 +6,7 @@ import '../widgets/cluster_data_loader.dart';
 import 'logs_screen.dart';
 import 'pod_exec_screen.dart';
 import 'yaml_editor_screen.dart';
+import '../services/yaml_writer.dart';
 
 class ExplorerScreen extends StatefulWidget {
   const ExplorerScreen({super.key});
@@ -107,7 +107,7 @@ class PodDetailScreen extends StatelessWidget {
                 MaterialPageRoute(
                   builder: (context) => YamlEditorScreen(
                     resourceName: pod.name,
-                    initialYaml: const JsonEncoder.withIndent('  ').convert(pod.rawYaml),
+                    initialYaml: manifestToYaml(pod.rawYaml),
                   ),
                 ),
               );
@@ -255,7 +255,7 @@ class PodDetailScreen extends StatelessWidget {
                       MaterialPageRoute(
                         builder: (context) => YamlEditorScreen(
                           resourceName: pod.name,
-                          initialYaml: const JsonEncoder.withIndent('  ').convert(pod.rawYaml),
+                          initialYaml: manifestToYaml(pod.rawYaml),
                         ),
                       ),
                     );

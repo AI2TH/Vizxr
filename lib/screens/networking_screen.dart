@@ -8,6 +8,7 @@ import '../theme/lens_theme.dart';
 import '../widgets/cluster_data_loader.dart';
 import '../widgets/resource_inspector_sheet.dart';
 import 'yaml_editor_screen.dart';
+import '../services/yaml_writer.dart';
 
 class NetworkingScreen extends StatefulWidget {
   const NetworkingScreen({super.key});
@@ -291,7 +292,7 @@ class _ServicesListViewState extends State<_ServicesListView> with ClusterDataLo
                     MaterialPageRoute(
                       builder: (context) => YamlEditorScreen(
                         resourceName: svc.name,
-                        initialYaml: svc.rawYaml.entries.map((e) => '${e.key}: ${e.value}').join('\n'),
+                        initialYaml: manifestToYaml(svc.rawYaml),
                       ),
                     ),
                   );

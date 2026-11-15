@@ -9,6 +9,7 @@ import '../widgets/resource_inspector_sheet.dart';
 import 'logs_screen.dart';
 import 'pod_exec_screen.dart';
 import 'yaml_editor_screen.dart';
+import '../services/yaml_writer.dart';
 
 class WorkloadsScreen extends StatefulWidget {
   const WorkloadsScreen({super.key});
@@ -429,11 +430,7 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> with Cluste
     }
   }
 
-  String _yamlString(Map<String, dynamic> raw) {
-    final buffer = StringBuffer();
-    raw.forEach((k, v) => buffer.writeln('$k: $v'));
-    return buffer.toString();
-  }
+  String _yamlString(Map<String, dynamic> raw) => manifestToYaml(raw);
 }
 
 class PodDetailScreen extends StatelessWidget {

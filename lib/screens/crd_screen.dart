@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
@@ -6,6 +5,7 @@ import '../services/k8s_client.dart';
 import '../widgets/cluster_data_loader.dart';
 import '../theme/lens_theme.dart';
 import 'yaml_editor_screen.dart';
+import '../services/yaml_writer.dart';
 
 class CrdScreen extends StatefulWidget {
   const CrdScreen({super.key});
@@ -492,7 +492,7 @@ spec:
                               MaterialPageRoute(
                                 builder: (context) => YamlEditorScreen(
                                   resourceName: crd.name,
-                                  initialYaml: jsonEncode(crd.rawYaml),
+                                  initialYaml: manifestToYaml(crd.rawYaml),
                                 ),
                               ),
                             );
@@ -875,7 +875,7 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
                     MaterialPageRoute(
                       builder: (context) => YamlEditorScreen(
                         resourceName: item.name,
-                        initialYaml: jsonEncode(item.rawYaml),
+                        initialYaml: manifestToYaml(item.rawYaml),
                       ),
                     ),
                   );

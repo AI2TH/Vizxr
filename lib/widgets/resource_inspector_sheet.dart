@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -10,6 +9,7 @@ import '../screens/logs_screen.dart';
 import '../screens/pod_exec_screen.dart';
 import '../screens/yaml_editor_screen.dart';
 import 'sparkline_chart.dart';
+import '../services/yaml_writer.dart';
 
 class ResourceInspectorSheet extends StatefulWidget {
   final K8sResource resource;
@@ -250,7 +250,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                         MaterialPageRoute(
                           builder: (context) => YamlEditorScreen(
                             resourceName: _res.name,
-                            initialYaml: jsonEncode(_res.rawYaml),
+                            initialYaml: manifestToYaml(_res.rawYaml),
                           ),
                         ),
                       );
@@ -804,7 +804,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
   }
 
   Widget _buildYamlTab() {
-    final formatted = const JsonEncoder.withIndent('  ').convert(_res.rawYaml);
+    final formatted = manifestToYaml(_res.rawYaml);
 
     return Column(
       children: [
@@ -818,7 +818,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                 children: [
                   IconButton(
                     icon: const Icon(Icons.copy_rounded, size: 16, color: LensTheme.cyanAccent),
-                    tooltip: 'Copy JSON/YAML',
+                    tooltip: 'Copy YAML',
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: formatted));
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied manifest to clipboard')));
