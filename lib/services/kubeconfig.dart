@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yaml/yaml.dart';
+import 'secret_store.dart';
 
 class KubeConfig {
   final String name;
@@ -24,39 +25,89 @@ class KubeConfig {
     this.insecureSkipTlsVerify = false,
   });
 
+  /// Everything except the credentials. This is what goes to SharedPreferences.
   Map<String, dynamic> toJson() => {
     'name': name,
     'server': server,
-    'token': token,
     'caCert': caCert,
     'clientCertData': clientCertData,
-    'clientKeyData': clientKeyData,
     'defaultNamespace': defaultNamespace,
     'insecureSkipTlsVerify': insecureSkipTlsVerify,
   };
 
-  factory KubeConfig.fromJson(Map<String, dynamic> json) => KubeConfig(
+  /// The credentials, kept in [secretStore] (Android Keystore) only.
+  Map<String, String> secretsJson() => {
+    if (token != null && token!.isNotEmpty) 'token': token!,
+    if (clientKeyData != null && clientKeyData!.isNotEmpty) 'clientKeyData': clientKeyData!,
+  };
+
+  factory KubeConfig.fromJson(Map<String, dynamic> json, {Map? secrets}) => KubeConfig(
     name: json['name'] ?? 'Cluster',
     server: json['server'] ?? 'https://127.0.0.1:6443',
-    token: json['token'],
+    token: secrets?['token']?.toString() ?? json['token'],
     caCert: json['caCert'],
     clientCertData: json['clientCertData'],
-    clientKeyData: json['clientKeyData'],
+    clientKeyData: secrets?['clientKeyData']?.toString() ?? json['clientKeyData'],
     defaultNamespace: json['defaultNamespace'] ?? 'default',
     insecureSkipTlsVerify: json['insecureSkipTlsVerify'] ?? false,
   );
 
   static const String _storageKey = 'vizxr_kubeconfigs';
 
+  /// Secure-storage key holding a JSON map of cluster key -> credentials.
+  static const String secretsStorageKey = 'vizxr_cluster_secrets';
+
+  /// Where tokens and client keys live. Replace with [MemorySecretStore] in tests.
+  static SecretStore secretStore = const SecureSecretStore();
+
+  /// Key that links a config to its entry in the secrets map.
+  String get storageKey => name;
+
+  static String? _keyOf(Map map) => map['name']?.toString();
+
+  /// Reads the credentials map, or null when secure storage is unavailable.
+  static Future<Map<String, Map<String, dynamic>>?> _readSecrets() async {
+    try {
+      final raw = await secretStore.read(secretsStorageKey);
+      if (raw == null || raw.isEmpty) return {};
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      return {
+        for (final e in decoded.entries)
+          if (e.value is Map) e.key.toString(): Map<String, dynamic>.from(e.value as Map),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _writeSecrets(Map<String, Map<String, dynamic>> secrets) async {
+    if (secrets.isEmpty) {
+      await secretStore.delete(secretsStorageKey);
+    } else {
+      await secretStore.write(secretsStorageKey, jsonEncode(secrets));
+    }
+  }
+
   static Future<void> saveConfig(KubeConfig config) async {
+    // Credentials go to the Keystore first, so a crash between the two writes
+    // never leaves a config without its token.
+    final secrets = await _readSecrets() ?? {};
+    final configSecrets = config.secretsJson();
+    if (configSecrets.isEmpty) {
+      secrets.remove(config.storageKey);
+    } else {
+      secrets[config.storageKey] = configSecrets;
+    }
+    await _writeSecrets(secrets);
+
     final prefs = await SharedPreferences.getInstance();
     final List<String> configs = prefs.getStringList(_storageKey) ?? [];
 
-    // Remove existing config with same name if any
+    // Remove existing config with same key if any
     configs.removeWhere((s) {
       try {
-        final map = jsonDecode(s);
-        return map['name'] == config.name;
+        return _keyOf(jsonDecode(s)) == config.storageKey;
       } catch (_) {
         return false;
       }
@@ -66,18 +117,22 @@ class KubeConfig {
     await prefs.setStringList(_storageKey, configs);
   }
 
-  static Future<void> deleteConfig(String name) async {
+  static Future<void> deleteConfig(String key) async {
     final prefs = await SharedPreferences.getInstance();
     final List<String> configs = prefs.getStringList(_storageKey) ?? [];
     configs.removeWhere((s) {
       try {
-        final map = jsonDecode(s);
-        return map['name'] == name;
+        return _keyOf(jsonDecode(s)) == key;
       } catch (_) {
         return false;
       }
     });
     await prefs.setStringList(_storageKey, configs);
+
+    final secrets = await _readSecrets();
+    if (secrets != null && secrets.remove(key) != null) {
+      await _writeSecrets(secrets);
+    }
   }
 
   static Future<KubeConfig> addFromFilePath(String filePath) async {
@@ -272,14 +327,43 @@ class KubeConfig {
   static Future<List<KubeConfig>> loadConfigs() async {
     final List<KubeConfig> configs = [];
     final prefs = await SharedPreferences.getInstance();
-    final List<String>? stored = prefs.getStringList(_storageKey);
+    final List<String> stored = prefs.getStringList(_storageKey) ?? [];
+    final secrets = await _readSecrets();
 
-    if (stored != null && stored.isNotEmpty) {
-      for (final s in stored) {
-        try {
-          configs.add(KubeConfig.fromJson(jsonDecode(s)));
-        } catch (_) {}
+    // Migration: configs saved by older versions kept the token and client
+    // key in plain SharedPreferences. Move them to secure storage and rewrite
+    // the entry without them. Skipped when secure storage cannot be read, so
+    // nothing is lost.
+    var migrated = false;
+    final rewritten = <String>[];
+    for (final s in stored) {
+      Map<String, dynamic> map;
+      try {
+        map = Map<String, dynamic>.from(jsonDecode(s) as Map);
+      } catch (_) {
+        rewritten.add(s);
+        continue;
       }
+      final key = _keyOf(map);
+      if (secrets != null && key != null && (map.containsKey('token') || map.containsKey('clientKeyData'))) {
+        final legacy = <String, dynamic>{
+          if (map['token'] != null && map['token'].toString().isNotEmpty) 'token': map['token'].toString(),
+          if (map['clientKeyData'] != null && map['clientKeyData'].toString().isNotEmpty)
+            'clientKeyData': map['clientKeyData'].toString(),
+        };
+        if (legacy.isNotEmpty) secrets[key] = {...legacy, ...?secrets[key]};
+        map.remove('token');
+        map.remove('clientKeyData');
+        migrated = true;
+      }
+      rewritten.add(jsonEncode(map));
+      try {
+        configs.add(KubeConfig.fromJson(map, secrets: key == null ? null : secrets?[key]));
+      } catch (_) {}
+    }
+    if (migrated && secrets != null) {
+      await _writeSecrets(secrets);
+      await prefs.setStringList(_storageKey, rewritten);
     }
 
     // Always ensure the local Linxr / Kubxr cluster is available

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:vizxr/services/secret_store.dart';
 import 'package:vizxr/services/kubeconfig.dart';
 
 void main() {
@@ -7,6 +8,7 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    KubeConfig.secretStore = MemorySecretStore();
   });
 
   group('KubeConfig Tests', () {
