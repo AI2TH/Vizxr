@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_data_loader.dart';
 import 'yaml_editor_screen.dart';
 
 class HelmChartCatalogItem {
@@ -269,7 +270,8 @@ class HelmScreen extends StatefulWidget {
   State<HelmScreen> createState() => _HelmScreenState();
 }
 
-class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateMixin {
+class _HelmScreenState extends State<HelmScreen>
+    with SingleTickerProviderStateMixin, ClusterDataLoader<HelmScreen, List<HelmRelease>> {
   late TabController _tabController;
   String _searchQuery = '';
   String _selectedCategory = 'All';
@@ -289,6 +291,10 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
   }
+
+  @override
+  Future<List<HelmRelease>> load(ClusterState clusterState) =>
+      clusterState.client.fetchHelmReleases(namespace: clusterState.currentNamespace);
 
   @override
   void dispose() {
@@ -621,7 +627,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
         item: item,
         clusterState: clusterState,
         onInstalled: () {
-          setState(() {});
+          reload();
           _tabController.animateTo(1);
         },
       ),
@@ -629,11 +635,10 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildInstalledReleasesTab(BuildContext context, ClusterState clusterState) {
-    final client = clusterState.client;
     final ns = clusterState.currentNamespace;
 
     return FutureBuilder<List<HelmRelease>>(
-      future: client.fetchHelmReleases(namespace: ns),
+      future: dataFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -913,7 +918,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(res.message)),
               );
-              setState(() {});
+              reload();
             },
             child: const Text('Confirm Rollback'),
           ),
@@ -956,7 +961,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(res.message)),
               );
-              setState(() {});
+              reload();
             },
             child: const Text('Uninstall'),
           ),

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_data_loader.dart';
 import 'yaml_editor_screen.dart';
 
 class StorageScreen extends StatefulWidget {
@@ -12,24 +13,13 @@ class StorageScreen extends StatefulWidget {
   State<StorageScreen> createState() => _StorageScreenState();
 }
 
-class _StorageScreenState extends State<StorageScreen> {
-  late Future<List<K8sResource>> _future;
+class _StorageScreenState extends State<StorageScreen> with ClusterDataLoader<StorageScreen, List<K8sResource>> {
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _refresh();
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _future = clusterState.client.fetchResources(
+  Future<List<K8sResource>> load(ClusterState clusterState) => clusterState.client.fetchResources(
         K8sResourceType.persistentVolumeClaim,
         namespace: clusterState.currentNamespace,
       );
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,7 +54,7 @@ class _StorageScreenState extends State<StorageScreen> {
               ),
             )
           : FutureBuilder<List<K8sResource>>(
-              future: _future,
+              future: dataFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -81,7 +71,7 @@ class _StorageScreenState extends State<StorageScreen> {
                 }
 
                 return RefreshIndicator(
-                  onRefresh: () async => _refresh(),
+                  onRefresh: reload,
                   color: LensTheme.cyanAccent,
                   child: ListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),

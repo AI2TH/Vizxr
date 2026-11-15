@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
+import '../widgets/cluster_data_loader.dart';
 import 'logs_screen.dart';
 import 'pod_exec_screen.dart';
 import 'yaml_editor_screen.dart';
@@ -14,30 +15,17 @@ class ExplorerScreen extends StatefulWidget {
   State<ExplorerScreen> createState() => _ExplorerScreenState();
 }
 
-class _ExplorerScreenState extends State<ExplorerScreen> {
-  late Future<List<K8sResource>> _podsFuture;
+class _ExplorerScreenState extends State<ExplorerScreen> with ClusterDataLoader<ExplorerScreen, List<K8sResource>> {
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _refresh();
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _podsFuture = clusterState.client.fetchResources(
-        K8sResourceType.pod,
-        namespace: clusterState.currentNamespace,
-      );
-    });
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(K8sResourceType.pod, namespace: clusterState.currentNamespace);
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: FutureBuilder<List<K8sResource>>(
-        future: _podsFuture,
+        future: dataFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -49,7 +37,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
 
           final pods = snapshot.data!;
           return RefreshIndicator(
-            onRefresh: () async => _refresh(),
+            onRefresh: reload,
             child: ListView.separated(
               itemCount: pods.length,
               separatorBuilder: (context, index) => const Divider(height: 1),
@@ -84,7 +72,7 @@ class _ExplorerScreenState extends State<ExplorerScreen> {
                       MaterialPageRoute(
                         builder: (context) => PodDetailScreen(pod: pod),
                       ),
-                    ).then((_) => _refresh());
+                    ).then((_) => reload());
                   },
                 );
               },

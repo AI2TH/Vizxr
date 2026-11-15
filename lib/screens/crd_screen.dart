@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
+import '../widgets/cluster_data_loader.dart';
 import '../theme/lens_theme.dart';
 import 'yaml_editor_screen.dart';
 
@@ -13,40 +14,21 @@ class CrdScreen extends StatefulWidget {
   State<CrdScreen> createState() => _CrdScreenState();
 }
 
-class _CrdScreenState extends State<CrdScreen> {
-  Future<List<K8sResource>>? _crdFuture;
-  K8sClientService? _lastClient;
+class _CrdScreenState extends State<CrdScreen> with ClusterDataLoader<CrdScreen, List<K8sResource>> {
   String _searchQuery = '';
   String _selectedGroup = 'All';
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final clusterState = Provider.of<ClusterState>(context);
-    _loadFuture(clusterState);
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(K8sResourceType.customResourceDefinition);
 
-  void _loadFuture(ClusterState clusterState) {
-    _lastClient = clusterState.client;
-    _crdFuture = clusterState.client.fetchResources(K8sResourceType.customResourceDefinition);
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _loadFuture(clusterState);
-    });
-  }
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
     final clusterState = context.watch<ClusterState>();
     final isLive = clusterState.isLiveConnected;
     final isDemo = clusterState.isDemo;
-
-    if (_lastClient != clusterState.client || _crdFuture == null) {
-      _loadFuture(clusterState);
-    }
 
     return Scaffold(
       backgroundColor: LensTheme.bgDark,
@@ -151,7 +133,7 @@ spec:
               ),
             )
           : FutureBuilder<List<K8sResource>>(
-              future: _crdFuture,
+              future: dataFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: LensTheme.purpleAccent));
@@ -590,8 +572,8 @@ class CustomResourceInstancesScreen extends StatefulWidget {
   State<CustomResourceInstancesScreen> createState() => _CustomResourceInstancesScreenState();
 }
 
-class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesScreen> {
-  late Future<List<K8sResource>> _instancesFuture;
+class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesScreen>
+    with ClusterDataLoader<CustomResourceInstancesScreen, List<K8sResource>> {
   String _search = '';
 
   String get group => widget.crd.annotations['group'] ?? '';
@@ -602,22 +584,14 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
   bool get isNamespaced => scope.toLowerCase() == 'namespaced';
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _refresh();
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _instancesFuture = clusterState.client.fetchCustomResourceObjects(
+  Future<List<K8sResource>> load(ClusterState clusterState) => clusterState.client.fetchCustomResourceObjects(
         group: group,
         version: version,
         plural: plural,
         namespace: isNamespaced ? clusterState.currentNamespace : null,
       );
-    });
-  }
+
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
@@ -728,7 +702,7 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
           // Object list
           Expanded(
             child: FutureBuilder<List<K8sResource>>(
-              future: _instancesFuture,
+              future: dataFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: LensTheme.purpleAccent));

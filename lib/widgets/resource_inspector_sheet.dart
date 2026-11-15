@@ -45,6 +45,8 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
   late TabController _tabController;
   late K8sResource _res;
   late Future<List<K8sResource>> _eventsFuture;
+  Future<({double cpuCores, double memBytes})?>? _podMetricsFuture;
+  bool _loaded = false;
 
   @override
   void initState() {
@@ -56,7 +58,14 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Load once when the sheet opens, not on every dependency change.
+    if (_loaded) return;
+    _loaded = true;
     _loadEvents();
+    final clusterState = context.read<ClusterState>();
+    if (!clusterState.isDemo && _res.type == K8sResourceType.pod) {
+      _podMetricsFuture = clusterState.client.fetchPodMetrics(_res.namespace, _res.name);
+    }
   }
 
   void _loadEvents() {
@@ -646,7 +655,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
 
   Widget _buildMetricsTab() {
     final clusterState = context.watch<ClusterState>();
-    if (!clusterState.isDemo) return _buildLiveMetricsTab(clusterState.client);
+    if (!clusterState.isDemo) return _buildLiveMetricsTab();
 
     // Demo cluster only: simulated 12-point curves around the mock usage.
     final cpuBase = _res.cpuUsage > 0 ? _res.cpuUsage : 0.12;
@@ -740,14 +749,14 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
   }
 
   /// Live clusters: current usage from metrics-server, no invented history.
-  Widget _buildLiveMetricsTab(K8sClientService client) {
+  Widget _buildLiveMetricsTab() {
     if (_res.type != K8sResourceType.pod) {
       return const Center(
         child: Text('Usage metrics are shown for pods.', style: TextStyle(color: LensTheme.textMuted, fontSize: 13)),
       );
     }
     return FutureBuilder<({double cpuCores, double memBytes})?>(
-      future: client.fetchPodMetrics(_res.namespace, _res.name),
+      future: _podMetricsFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));

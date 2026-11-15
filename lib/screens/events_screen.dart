@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_data_loader.dart';
 
 class EventsScreen extends StatefulWidget {
   const EventsScreen({super.key});
@@ -11,25 +12,13 @@ class EventsScreen extends StatefulWidget {
   State<EventsScreen> createState() => _EventsScreenState();
 }
 
-class _EventsScreenState extends State<EventsScreen> {
-  late Future<List<K8sResource>> _future;
+class _EventsScreenState extends State<EventsScreen> with ClusterDataLoader<EventsScreen, List<K8sResource>> {
   String _filter = 'All';
   String _searchQuery = '';
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _refresh();
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _future = clusterState.client.fetchEvents(
-        namespace: clusterState.currentNamespace,
-      );
-    });
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchEvents(namespace: clusterState.currentNamespace);
 
   @override
   Widget build(BuildContext context) {
@@ -52,7 +41,7 @@ class _EventsScreenState extends State<EventsScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: LensTheme.cyanAccent),
-            onPressed: _refresh,
+            onPressed: reload,
           ),
         ],
       ),
@@ -122,7 +111,7 @@ class _EventsScreenState extends State<EventsScreen> {
 
           Expanded(
             child: FutureBuilder<List<K8sResource>>(
-              future: _future,
+              future: dataFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -150,7 +139,7 @@ class _EventsScreenState extends State<EventsScreen> {
                 }
 
                 return RefreshIndicator(
-                  onRefresh: () async => _refresh(),
+                  onRefresh: reload,
                   color: LensTheme.cyanAccent,
                   child: ListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),

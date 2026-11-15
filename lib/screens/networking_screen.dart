@@ -5,6 +5,7 @@ import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../services/port_forward_service.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_data_loader.dart';
 import '../widgets/resource_inspector_sheet.dart';
 import 'yaml_editor_screen.dart';
 
@@ -81,43 +82,19 @@ class _ServicesListView extends StatefulWidget {
   State<_ServicesListView> createState() => _ServicesListViewState();
 }
 
-class _ServicesListViewState extends State<_ServicesListView> {
-  Future<List<K8sResource>>? _future;
-  K8sClientService? _lastClient;
-  String? _lastNamespace;
+class _ServicesListViewState extends State<_ServicesListView> with ClusterDataLoader<_ServicesListView, List<K8sResource>> {
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final clusterState = Provider.of<ClusterState>(context);
-    _loadFuture(clusterState);
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(K8sResourceType.service, namespace: clusterState.currentNamespace);
 
-  void _loadFuture(ClusterState clusterState) {
-    _lastClient = clusterState.client;
-    _lastNamespace = clusterState.currentNamespace;
-    _future = clusterState.client.fetchResources(
-      K8sResourceType.service,
-      namespace: clusterState.currentNamespace,
-    );
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _loadFuture(clusterState);
-    });
-  }
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
     final clusterState = context.watch<ClusterState>();
     final isLive = clusterState.isLiveConnected;
     final isDemo = clusterState.isDemo;
-
-    if (_lastClient != clusterState.client || _lastNamespace != clusterState.currentNamespace || _future == null) {
-      _loadFuture(clusterState);
-    }
 
     if (!isLive && !isDemo) {
       return Center(
@@ -133,7 +110,7 @@ class _ServicesListViewState extends State<_ServicesListView> {
     }
 
     return FutureBuilder<List<K8sResource>>(
-      future: _future,
+      future: dataFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -150,7 +127,7 @@ class _ServicesListViewState extends State<_ServicesListView> {
         }
 
         return RefreshIndicator(
-          onRefresh: () async => _refresh(),
+          onRefresh: reload,
           color: LensTheme.cyanAccent,
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -338,42 +315,18 @@ class _IngressesListView extends StatefulWidget {
   State<_IngressesListView> createState() => _IngressesListViewState();
 }
 
-class _IngressesListViewState extends State<_IngressesListView> {
-  Future<List<K8sResource>>? _future;
-  K8sClientService? _lastClient;
-  String? _lastNamespace;
+class _IngressesListViewState extends State<_IngressesListView> with ClusterDataLoader<_IngressesListView, List<K8sResource>> {
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final clusterState = Provider.of<ClusterState>(context);
-    _loadFuture(clusterState);
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(K8sResourceType.ingress, namespace: clusterState.currentNamespace);
 
-  void _loadFuture(ClusterState clusterState) {
-    _lastClient = clusterState.client;
-    _lastNamespace = clusterState.currentNamespace;
-    _future = clusterState.client.fetchResources(
-      K8sResourceType.ingress,
-      namespace: clusterState.currentNamespace,
-    );
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _loadFuture(clusterState);
-    });
-  }
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
-    final clusterState = context.watch<ClusterState>();
-    if (_lastClient != clusterState.client || _lastNamespace != clusterState.currentNamespace || _future == null) {
-      _loadFuture(clusterState);
-    }
     return FutureBuilder<List<K8sResource>>(
-      future: _future,
+      future: dataFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));

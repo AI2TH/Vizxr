@@ -25,7 +25,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Verify title text exists in AppBar
-    expect(find.text('Vizxr'), findsOneWidget);
+    // The app bar shows the cluster switcher. Before data loading moved out
+    // of build(), requests discarded on rebuild failed unobserved here.
+    expect(find.byTooltip('Clusters Switcher'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
