@@ -1979,6 +1979,40 @@ master:
     }
   }
 
+  /// Opens a WebSocket to a pod subresource such as `exec` or `portforward`,
+  /// with this client's bearer token, CA, client certificate and
+  /// skip-verify setting (the same HttpClient is used for the upgrade).
+  ///
+  /// [query] values may be a String or an Iterable<String> for repeated
+  /// parameters (for example several `command` arguments).
+  Future<WebSocket> openPodWebSocket({
+    required String namespace,
+    required String pod,
+    required String subresource,
+    required Map<String, dynamic> query,
+    List<String> protocols = const ['v4.channel.k8s.io'],
+  }) {
+    final client = _httpClient;
+    if (client == null) throw StateError('Kubernetes client is closed');
+    final base = Uri.parse(effectiveBaseUrl);
+    final basePath = base.path.endsWith('/') ? base.path.substring(0, base.path.length - 1) : base.path;
+    final uri = base.replace(
+      scheme: base.scheme == 'http' ? 'ws' : 'wss',
+      path: '$basePath/api/v1/namespaces/${Uri.encodeComponent(namespace)}'
+          '/pods/${Uri.encodeComponent(pod)}/$subresource',
+      queryParameters: query,
+    );
+    return WebSocket.connect(
+      uri.toString(),
+      protocols: protocols,
+      headers: {
+        if (token != null && token!.isNotEmpty) 'Authorization': 'Bearer $token',
+      },
+      compression: CompressionOptions.compressionOff,
+      customClient: client,
+    ).timeout(const Duration(seconds: 15));
+  }
+
   /// Cluster-wide CPU and memory: allocatable from `/api/v1/nodes`, usage
   /// from `metrics.k8s.io/v1beta1` node metrics. When metrics-server is not
   /// installed (404) or not ready (503), usage is null and
