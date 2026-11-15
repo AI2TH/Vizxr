@@ -3,8 +3,10 @@ import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../services/k8s_quantity.dart';
+import '../services/metrics_history.dart';
 import '../theme/lens_theme.dart';
 import '../widgets/cluster_metrics_panel.dart';
+import '../widgets/usage_sparklines.dart';
 import 'crd_screen.dart';
 import 'edit_cluster_screen.dart';
 import 'events_screen.dart';
@@ -265,7 +267,6 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
       return _buildDisconnectedDiagnosticView(context, clusterState);
     }
 
-    final client = clusterState.client;
     final ns = clusterState.currentNamespace;
 
     return FutureBuilder<List<K8sResource>>(
@@ -305,7 +306,7 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
               const SizedBox(height: 14),
 
               // Telemetry Gauges (CPU & Memory) from metrics-server
-              ClusterMetricsPanel(client: client),
+              ClusterMetricsPanel(sampler: clusterState.metrics),
               const SizedBox(height: 14),
 
               // Quick Actions Dock
@@ -868,6 +869,13 @@ spec:
           if (mem != null) _buildNodeAttribute('Allocatable memory', K8sQuantity.formatBytes(mem)),
           if (pods != null) _buildNodeAttribute('Max pods', pods.toString()),
           _buildNodeAttribute('Age', node.age),
+          // Usage history recorded by the metrics sampler (nothing shown
+          // without metrics-server).
+          UsageSparklines(
+            sampler: context.read<ClusterState>().metrics,
+            cpuKey: MetricsHistory.nodeCpu(node.name),
+            memKey: MetricsHistory.nodeMem(node.name),
+          ),
         ],
       ),
     );

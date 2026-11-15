@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'kubeconfig.dart';
 import 'k8s_client.dart';
+import 'metrics_history.dart';
 import 'port_forward_service.dart';
 
 class ClusterState extends ChangeNotifier {
@@ -10,6 +11,10 @@ class ClusterState extends ChangeNotifier {
   String _currentNamespace = 'all-namespaces';
   List<String> _namespaces = ['all-namespaces', 'default', 'kube-system', 'database', 'production', 'monitoring'];
   bool _isLiveConnected = false;
+
+  /// Polls metrics-server for the active cluster and keeps a short history
+  /// per node and pod for the sparklines.
+  final MetricsSampler metrics = MetricsSampler();
 
   KubeConfig? get activeConfig => _activeConfig;
   K8sClientService get client => _activeClient;
@@ -26,6 +31,7 @@ class ClusterState extends ChangeNotifier {
 
   void _initDefaultClient() {
     _activeClient = K8sClientService(baseUrl: 'https://127.0.0.1:6443', isDemo: false);
+    metrics.bind(_activeClient, _currentNamespace);
   }
 
   Future<void> refreshConfigs() async {
@@ -66,6 +72,7 @@ class ClusterState extends ChangeNotifier {
       fallbackBaseUrls: _activeConfig?.fallbackServers ?? const [],
       isDemo: isDemo,
     );
+    metrics.bind(_activeClient, _currentNamespace);
   }
 
   Future<void> _checkLiveConnection() async {
@@ -99,6 +106,7 @@ class ClusterState extends ChangeNotifier {
 
   void setNamespace(String namespace) {
     _currentNamespace = namespace;
+    metrics.bind(_activeClient, namespace);
     notifyListeners();
   }
 

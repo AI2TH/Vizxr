@@ -2227,6 +2227,44 @@ master:
     }
   }
 
+  /// Usage of every pod in [namespace] (or the whole cluster), keyed by
+  /// "namespace/name", from one metrics.k8s.io list call. Null when
+  /// metrics-server is unavailable, and in demo mode.
+  Future<Map<String, ({double cpuCores, double memBytes})>?> fetchPodMetricsList({String? namespace}) async {
+    if (isDemo) return null;
+    final ns = (namespace == null || namespace == 'all-namespaces') ? null : namespace;
+    try {
+      final json = await _request(
+        'GET',
+        ns == null ? '/apis/metrics.k8s.io/v1beta1/pods' : '/apis/metrics.k8s.io/v1beta1/namespaces/$ns/pods',
+      );
+      return parsePodMetricsList(json is Map ? json : const {});
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Sums container usage per pod in a PodMetricsList.
+  static Map<String, ({double cpuCores, double memBytes})> parsePodMetricsList(Map json) {
+    final result = <String, ({double cpuCores, double memBytes})>{};
+    for (final item in (json['items'] as List?) ?? const []) {
+      if (item is! Map || item['metadata'] is! Map) continue;
+      final meta = item['metadata'] as Map;
+      final name = meta['name']?.toString();
+      if (name == null) continue;
+      var cpu = 0.0;
+      var mem = 0.0;
+      for (final c in (item['containers'] as List?) ?? const []) {
+        if (c is! Map || c['usage'] is! Map) continue;
+        final usage = c['usage'] as Map;
+        cpu += K8sQuantity.tryParse(usage['cpu']) ?? 0;
+        mem += K8sQuantity.tryParse(usage['memory']) ?? 0;
+      }
+      result['${meta['namespace'] ?? 'default'}/$name'] = (cpuCores: cpu, memBytes: mem);
+    }
+    return result;
+  }
+
   /// Cluster-wide CPU and memory: allocatable from `/api/v1/nodes`, usage
   /// from `metrics.k8s.io/v1beta1` node metrics. When metrics-server is not
   /// installed (404) or not ready (503), usage is null and
