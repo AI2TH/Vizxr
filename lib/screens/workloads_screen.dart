@@ -3,11 +3,13 @@ import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_data_loader.dart';
 import '../widgets/resource_card.dart';
 import '../widgets/resource_inspector_sheet.dart';
 import 'logs_screen.dart';
 import 'pod_exec_screen.dart';
 import 'yaml_editor_screen.dart';
+import '../services/yaml_writer.dart';
 
 class WorkloadsScreen extends StatefulWidget {
   const WorkloadsScreen({super.key});
@@ -134,45 +136,21 @@ class WorkloadCategoryView extends StatefulWidget {
   State<WorkloadCategoryView> createState() => _WorkloadCategoryViewState();
 }
 
-class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
-  Future<List<K8sResource>>? _future;
-  K8sClientService? _lastClient;
-  String? _lastNamespace;
+class _WorkloadCategoryViewState extends State<WorkloadCategoryView> with ClusterDataLoader<WorkloadCategoryView, List<K8sResource>> {
   String _searchQuery = '';
   String _statusFilter = 'All';
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final clusterState = Provider.of<ClusterState>(context);
-    _loadFuture(clusterState);
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(widget.type, namespace: clusterState.currentNamespace);
 
-  void _loadFuture(ClusterState clusterState) {
-    _lastClient = clusterState.client;
-    _lastNamespace = clusterState.currentNamespace;
-    _future = clusterState.client.fetchResources(
-      widget.type,
-      namespace: clusterState.currentNamespace,
-    );
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _loadFuture(clusterState);
-    });
-  }
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
     final clusterState = context.watch<ClusterState>();
     final isLive = clusterState.isLiveConnected;
     final isDemo = clusterState.isDemo;
-
-    if (_lastClient != clusterState.client || _lastNamespace != clusterState.currentNamespace || _future == null) {
-      _loadFuture(clusterState);
-    }
 
     if (!isLive && !isDemo) {
       return Center(
@@ -290,7 +268,7 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
         // Resource List
         Expanded(
           child: FutureBuilder<List<K8sResource>>(
-            future: _future,
+            future: dataFuture,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -328,7 +306,7 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
               }
 
               return RefreshIndicator(
-                onRefresh: () async => _refresh(),
+                onRefresh: reload,
                 color: LensTheme.cyanAccent,
                 backgroundColor: LensTheme.bgSurface,
                 child: ListView.builder(
@@ -452,11 +430,7 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
     }
   }
 
-  String _yamlString(Map<String, dynamic> raw) {
-    final buffer = StringBuffer();
-    raw.forEach((k, v) => buffer.writeln('$k: $v'));
-    return buffer.toString();
-  }
+  String _yamlString(Map<String, dynamic> raw) => manifestToYaml(raw);
 }
 
 class PodDetailScreen extends StatelessWidget {

@@ -66,10 +66,15 @@ class ManifestApplyResult {
   final String message;
   final dynamic resource;
 
+  /// True when server-side apply refused the change because another field
+  /// manager owns a field. Retrying with `forceConflicts` takes ownership.
+  final bool conflict;
+
   ManifestApplyResult({
     required this.success,
     required this.message,
     this.resource,
+    this.conflict = false,
   });
 }
 
@@ -195,20 +200,16 @@ class K8sClientService {
 
   String get effectiveBaseUrl => _workingBaseUrl ?? baseUrl;
 
-  List<String> get _candidateBaseUrls {
+  /// Other URLs for the same API server, tried only when [baseUrl] cannot
+  /// be reached. Set for "Linxr on this phone" clusters, empty otherwise.
+  final List<String> fallbackBaseUrls;
+
+  /// URLs tried in order: the last one that answered, [baseUrl], then
+  /// [fallbackBaseUrls].
+  List<String> get candidateBaseUrls {
     final list = <String>[];
-    if (_workingBaseUrl != null) {
-      list.add(_workingBaseUrl!);
-    }
-    if (!list.contains(baseUrl)) {
-      list.add(baseUrl);
-    }
-    if (baseUrl.contains('172.16.0.2')) {
-      final loopback = baseUrl.replaceAll('172.16.0.2', '127.0.0.1');
-      if (!list.contains(loopback)) list.add(loopback);
-    } else if (baseUrl.contains('127.0.0.1')) {
-      final vm = baseUrl.replaceAll('127.0.0.1', '172.16.0.2');
-      if (!list.contains(vm)) list.add(vm);
+    for (final url in [if (_workingBaseUrl != null) _workingBaseUrl!, baseUrl, ...fallbackBaseUrls]) {
+      if (!list.contains(url)) list.add(url);
     }
     return list;
   }
@@ -220,6 +221,7 @@ class K8sClientService {
     this.clientCertData,
     this.clientKeyData,
     this.insecureSkipTlsVerify = false,
+    this.fallbackBaseUrls = const [],
     bool? isDemo,
   }) : isDemo = isDemo ?? isDemoServer(baseUrl) {
     _initHttpClient();
@@ -1058,8 +1060,8 @@ master:
 
   /// Sends one API request.
   ///
-  /// The loopback / VM fallback URLs are only tried when the connection
-  /// itself fails. Once a server has answered, its HTTP error is thrown
+  /// The [fallbackBaseUrls] (Linxr clusters only) are tried only when the
+  /// connection itself fails. Once a server has answered, its HTTP error is thrown
   /// as-is: retrying a POST or DELETE elsewhere could apply it twice and
   /// would hide the real error (403, 409, 422...) behind a connect error.
   Future<dynamic> _request(
@@ -1071,7 +1073,7 @@ master:
     final client = _httpClient;
     if (client == null) throw StateError('Kubernetes client is closed');
     Object? lastError;
-    final candidates = _candidateBaseUrls;
+    final candidates = candidateBaseUrls;
 
     for (final base in candidates) {
       final uri = Uri.parse('$base$endpoint');
@@ -1101,7 +1103,6 @@ master:
         lastError = e;
         continue;
       }
-      if (resp == null) continue;
 
       final respBody = await resp.transform(utf8.decoder).join();
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
@@ -1352,28 +1353,110 @@ master:
 
   /// Real Lens-like Generic Manifest Apply
   /// Parses YAML or JSON, routes to proper Kubernetes REST endpoint, and applies it.
-  Future<ManifestApplyResult> applyManifest(String yamlOrJsonString, {String? targetNamespace}) async {
+  /// Field manager name used for server-side apply.
+  static const String fieldManager = 'vizxr';
+
+  /// Splits a YAML stream (documents separated by `---`) or a JSON object
+  /// into Kubernetes objects. Empty documents are skipped and a `kind: List`
+  /// is expanded into its items. Throws [FormatException] on anything that
+  /// is not an object.
+  static List<Map<String, dynamic>> parseManifestDocuments(String text) {
+    List<dynamic> docs;
     try {
-      dynamic doc;
+      docs = loadYamlStream(text).toList();
+    } on YamlException catch (yamlError) {
       try {
-        doc = loadYaml(yamlOrJsonString);
+        docs = [jsonDecode(text)];
       } catch (_) {
-        doc = jsonDecode(yamlOrJsonString);
+        throw FormatException('Invalid YAML: ${yamlError.message}');
       }
+    }
 
+    final objects = <Map<String, dynamic>>[];
+    void add(dynamic doc, int index) {
+      if (doc == null) return;
       if (doc is! Map) {
-        return ManifestApplyResult(success: false, message: 'Invalid manifest format: expected YAML/JSON object');
+        throw FormatException('Document ${index + 1} is not an object');
       }
+      final map = _deepConvert(doc);
+      if (map['kind'] == 'List' && map['items'] is List) {
+        for (final item in map['items'] as List) {
+          add(item, index);
+        }
+        return;
+      }
+      objects.add(map);
+    }
 
-      // Convert YamlMap to mutable Map<String, dynamic>
-      final manifest = _deepConvertMap(doc);
+    for (var i = 0; i < docs.length; i++) {
+      add(docs[i], i);
+    }
+    return objects;
+  }
+
+  static Map<String, dynamic> _deepConvert(Map map) {
+    dynamic convert(dynamic v) {
+      if (v is Map) return _deepConvert(v);
+      if (v is List) return v.map(convert).toList();
+      return v;
+    }
+
+    return {for (final e in map.entries) e.key.toString(): convert(e.value)};
+  }
+
+  /// Applies every object in [yamlOrJsonString], like `kubectl apply
+  /// --server-side`. Objects are applied in order and a failure does not
+  /// stop the rest.
+  Future<ManifestApplyResult> applyManifest(
+    String yamlOrJsonString, {
+    String? targetNamespace,
+    bool forceConflicts = false,
+  }) async {
+    List<Map<String, dynamic>> docs;
+    try {
+      docs = parseManifestDocuments(yamlOrJsonString);
+    } catch (e) {
+      return ManifestApplyResult(success: false, message: 'Invalid manifest: $e');
+    }
+    if (docs.isEmpty) {
+      return ManifestApplyResult(success: false, message: 'Invalid manifest: no objects found');
+    }
+
+    final results = <ManifestApplyResult>[];
+    for (final doc in docs) {
+      results.add(await _applyObject(doc, targetNamespace: targetNamespace, forceConflicts: forceConflicts));
+    }
+    if (results.length == 1) return results.first;
+
+    final applied = results.where((r) => r.success).length;
+    return ManifestApplyResult(
+      success: applied == results.length,
+      conflict: results.any((r) => r.conflict),
+      message: '$applied of ${results.length} objects applied\n'
+          '${results.map((r) => '${r.success ? 'OK' : 'FAILED'}  ${r.message}').join('\n')}',
+      resource: results.lastWhere((r) => r.success, orElse: () => results.last).resource,
+    );
+  }
+
+  Future<ManifestApplyResult> _applyObject(
+    Map<String, dynamic> manifest, {
+    String? targetNamespace,
+    bool forceConflicts = false,
+  }) async {
+    try {
       final kind = manifest['kind']?.toString();
       final apiVersion = manifest['apiVersion']?.toString() ?? 'v1';
-      final metadata = (manifest['metadata'] as Map<String, dynamic>?) ?? {};
+      final metadata = manifest['metadata'] is Map
+          ? Map<String, dynamic>.from(manifest['metadata'] as Map)
+          : <String, dynamic>{};
       final name = metadata['name']?.toString();
       if (kind == null || name == null) {
         return ManifestApplyResult(success: false, message: 'Manifest missing "kind" or "metadata.name"');
       }
+      manifest['apiVersion'] = apiVersion;
+      // Server-side apply rejects objects that carry managedFields, which
+      // YAML copied from the inspector does.
+      metadata.remove('managedFields');
 
       final clusterScoped = isClusterScopedKind(kind);
       String namespace = clusterScoped
@@ -1381,7 +1464,7 @@ master:
           : (metadata['namespace']?.toString() ?? (targetNamespace ?? 'default'));
       if (namespace == 'all-namespaces') namespace = 'default';
       if (clusterScoped) {
-        manifest['metadata'] = {...metadata}..remove('namespace');
+        manifest['metadata'] = metadata..remove('namespace');
       } else {
         manifest['metadata'] = {...metadata, 'name': name, 'namespace': namespace};
       }
@@ -1424,49 +1507,39 @@ master:
 
       // Determine REST endpoint for real cluster
       final endpointInfo = _resolveResourceEndpoint(kind, apiVersion, namespace, name);
-      final collectionPath = endpointInfo['collectionPath']!;
       final resourcePath = endpointInfo['resourcePath']!;
       final resType = endpointInfo['type'] as K8sResourceType;
 
-      // Try POST (Create)
+      // Server-side apply: one PATCH creates or updates the object, and the
+      // API server merges fields the way `kubectl apply --server-side` does.
+      final query = 'fieldManager=$fieldManager${forceConflicts ? '&force=true' : ''}';
+      final where = clusterScoped || namespace == 'none' ? 'cluster-wide' : 'in namespace "$namespace"';
       try {
-        final resp = await _request('POST', collectionPath, body: manifest);
-        final created = _parseResource(resType, resp);
+        final resp = await _request(
+          'PATCH',
+          '$resourcePath?$query',
+          body: jsonEncode(manifest),
+          contentType: 'application/apply-patch+yaml',
+        );
+        final applied = resp is Map<String, dynamic> && resp.isNotEmpty ? _parseResource(resType, resp) : null;
         return ManifestApplyResult(
           success: true,
-          message: '$kind "$name" created successfully in namespace "$namespace"',
-          resource: created,
+          message: '$kind "$name" applied $where',
+          resource: applied,
         );
       } on K8sApiException catch (e) {
-        // 409 Conflict means it already exists: replace it with PUT.
         if (e.statusCode == 409) {
-          final resp = await _request('PUT', resourcePath, body: manifest);
-          final updated = _parseResource(resType, resp);
           return ManifestApplyResult(
-            success: true,
-            message: '$kind "$name" updated successfully in namespace "$namespace"',
-            resource: updated,
+            success: false,
+            conflict: true,
+            message: '$kind "$name": conflict with another field manager. $e',
           );
         }
-        rethrow;
+        return ManifestApplyResult(success: false, message: '$kind "$name": $e');
       }
     } catch (e) {
       return ManifestApplyResult(success: false, message: 'Apply failed: $e');
     }
-  }
-
-  Map<String, dynamic> _deepConvertMap(Map map) {
-    final converted = <String, dynamic>{};
-    map.forEach((key, value) {
-      if (value is Map) {
-        converted[key.toString()] = _deepConvertMap(value);
-      } else if (value is List) {
-        converted[key.toString()] = value.map((item) => item is Map ? _deepConvertMap(item) : item).toList();
-      } else {
-        converted[key.toString()] = value;
-      }
-    });
-    return converted;
   }
 
   Map<String, dynamic> _resolveResourceEndpoint(String kind, String apiVersion, String namespace, String name) {
@@ -1703,11 +1776,28 @@ master:
   Future<List<K8sResource>> fetchCustomResourceDefinitions() =>
       fetchResources(K8sResourceType.customResourceDefinition);
 
+  /// REST path of one custom resource. Cluster-scoped resources have no
+  /// `namespaces/<ns>` segment, whatever namespace the UI is showing.
+  static String customResourcePath({
+    required String group,
+    required String version,
+    required String plural,
+    required String name,
+    required String namespace,
+    required bool clusterScoped,
+  }) {
+    final noNamespace = clusterScoped || namespace.isEmpty || namespace == 'none' || namespace == 'all-namespaces';
+    return noNamespace
+        ? '/apis/$group/$version/$plural/$name'
+        : '/apis/$group/$version/namespaces/$namespace/$plural/$name';
+  }
+
   Future<List<K8sResource>> fetchCustomResourceObjects({
     required String group,
     required String version,
     required String plural,
     String? namespace,
+    bool clusterScoped = false,
   }) async {
     final ns = (namespace == null || namespace == 'all-namespaces') ? null : namespace;
 
@@ -1735,6 +1825,7 @@ master:
           ann['group'] = group;
           ann['version'] = version;
           ann['plural'] = plural;
+          ann['scope'] = clusterScoped ? 'Cluster' : 'Namespaced';
           return parsed.copyWith(annotations: ann);
         }).toList();
       }
@@ -1748,6 +1839,7 @@ master:
     required String plural,
     required String name,
     required String namespace,
+    bool clusterScoped = false,
   }) async {
     if (isDemo) {
       _mockCustomResources.removeWhere((r) => r.name == name && (namespace == 'none' || r.namespace == namespace));
@@ -1766,9 +1858,14 @@ master:
       return;
     }
 
-    final path = (namespace.isEmpty || namespace == 'none' || namespace == 'all-namespaces')
-        ? '/apis/$group/$version/$plural/$name'
-        : '/apis/$group/$version/namespaces/$namespace/$plural/$name';
+    final path = customResourcePath(
+      group: group,
+      version: version,
+      plural: plural,
+      name: name,
+      namespace: namespace,
+      clusterScoped: clusterScoped,
+    );
     await _request('DELETE', path);
   }
 
@@ -2129,6 +2226,44 @@ master:
     }
   }
 
+  /// Usage of every pod in [namespace] (or the whole cluster), keyed by
+  /// "namespace/name", from one metrics.k8s.io list call. Null when
+  /// metrics-server is unavailable, and in demo mode.
+  Future<Map<String, ({double cpuCores, double memBytes})>?> fetchPodMetricsList({String? namespace}) async {
+    if (isDemo) return null;
+    final ns = (namespace == null || namespace == 'all-namespaces') ? null : namespace;
+    try {
+      final json = await _request(
+        'GET',
+        ns == null ? '/apis/metrics.k8s.io/v1beta1/pods' : '/apis/metrics.k8s.io/v1beta1/namespaces/$ns/pods',
+      );
+      return parsePodMetricsList(json is Map ? json : const {});
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Sums container usage per pod in a PodMetricsList.
+  static Map<String, ({double cpuCores, double memBytes})> parsePodMetricsList(Map json) {
+    final result = <String, ({double cpuCores, double memBytes})>{};
+    for (final item in (json['items'] as List?) ?? const []) {
+      if (item is! Map || item['metadata'] is! Map) continue;
+      final meta = item['metadata'] as Map;
+      final name = meta['name']?.toString();
+      if (name == null) continue;
+      var cpu = 0.0;
+      var mem = 0.0;
+      for (final c in (item['containers'] as List?) ?? const []) {
+        if (c is! Map || c['usage'] is! Map) continue;
+        final usage = c['usage'] as Map;
+        cpu += K8sQuantity.tryParse(usage['cpu']) ?? 0;
+        mem += K8sQuantity.tryParse(usage['memory']) ?? 0;
+      }
+      result['${meta['namespace'] ?? 'default'}/$name'] = (cpuCores: cpu, memBytes: mem);
+    }
+    return result;
+  }
+
   /// Cluster-wide CPU and memory: allocatable from `/api/v1/nodes`, usage
   /// from `metrics.k8s.io/v1beta1` node metrics. When metrics-server is not
   /// installed (404) or not ready (503), usage is null and
@@ -2370,9 +2505,30 @@ master:
           if (valuesYaml != null && valuesYaml.isNotEmpty) 'valuesContent': valuesYaml,
         },
       };
-      return await applyManifest(jsonEncode(payload));
+      final result = await applyManifest(jsonEncode(payload));
+      if (!result.success && result.message.contains('HTTP 404')) {
+        return ManifestApplyResult(success: false, message: k3sHelmOnlyMessage);
+      }
+      return result;
     } catch (e) {
       return ManifestApplyResult(success: false, message: 'Failed to deploy chart: $e');
+    }
+  }
+
+  /// Why chart installs are unavailable outside k3s.
+  static const String k3sHelmOnlyMessage =
+      'Installing charts needs the k3s helm-controller (HelmChart objects, helm.cattle.io/v1), which this '
+      'cluster does not have. Install charts with the helm CLI; Vizxr lists the resulting releases read-only.';
+
+  /// Whether the cluster serves helm.cattle.io/v1 (k3s and RKE2 ship its
+  /// helm-controller). Without it Vizxr's Helm screen is read-only.
+  Future<bool> hasK3sHelmController() async {
+    if (isDemo) return true;
+    try {
+      await _request('GET', '/apis/helm.cattle.io/v1');
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 

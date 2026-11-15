@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'kubeconfig.dart';
 import 'k8s_client.dart';
+import 'metrics_history.dart';
 import 'port_forward_service.dart';
 
 class ClusterState extends ChangeNotifier {
@@ -10,6 +11,10 @@ class ClusterState extends ChangeNotifier {
   String _currentNamespace = 'all-namespaces';
   List<String> _namespaces = ['all-namespaces', 'default', 'kube-system', 'database', 'production', 'monitoring'];
   bool _isLiveConnected = false;
+
+  /// Polls metrics-server for the active cluster and keeps a short history
+  /// per node and pod for the sparklines.
+  final MetricsSampler metrics = MetricsSampler();
 
   KubeConfig? get activeConfig => _activeConfig;
   K8sClientService get client => _activeClient;
@@ -26,14 +31,17 @@ class ClusterState extends ChangeNotifier {
 
   void _initDefaultClient() {
     _activeClient = K8sClientService(baseUrl: 'https://127.0.0.1:6443', isDemo: false);
+    metrics.bind(_activeClient, _currentNamespace);
   }
 
   Future<void> refreshConfigs() async {
     _availableConfigs = await KubeConfig.loadConfigs();
     if (_availableConfigs.isNotEmpty) {
-      if (_activeConfig == null || !_availableConfigs.any((c) => c.name == _activeConfig!.name)) {
-        _activeConfig = _availableConfigs.first;
-      }
+      final activeId = _activeConfig?.id;
+      _activeConfig = _availableConfigs.firstWhere(
+        (c) => c.id == activeId,
+        orElse: () => _availableConfigs.first,
+      );
     }
     _initClient();
     await _checkLiveConnection();
@@ -61,8 +69,10 @@ class ClusterState extends ChangeNotifier {
       clientCertData: clientCert,
       clientKeyData: clientKey,
       insecureSkipTlsVerify: insecure,
+      fallbackBaseUrls: _activeConfig?.fallbackServers ?? const [],
       isDemo: isDemo,
     );
+    metrics.bind(_activeClient, _currentNamespace);
   }
 
   Future<void> _checkLiveConnection() async {
@@ -96,25 +106,47 @@ class ClusterState extends ChangeNotifier {
 
   void setNamespace(String namespace) {
     _currentNamespace = namespace;
+    metrics.bind(_activeClient, namespace);
     notifyListeners();
   }
 
+  /// Saves a new cluster and connects to it. A name already used by another
+  /// cluster gets a " (2)" suffix; rename it from the edit screen.
   Future<void> addConfig(KubeConfig config) async {
-    await KubeConfig.saveConfig(config);
+    final existing = await KubeConfig.loadConfigs();
+    final taken = existing.where((c) => c.id != config.id).map((c) => c.name);
+    final toSave = config.copyWith(name: KubeConfig.uniqueName(config.name, taken));
+    await KubeConfig.saveConfig(toSave);
+    _activeConfig = toSave;
     await refreshConfigs();
-    await setConfig(config);
   }
 
-  Future<void> deleteConfig(String name) async {
-    await KubeConfig.deleteConfig(name);
-    if (_activeConfig?.name == name) {
+  /// Saves changes to an existing cluster. Reconnects when it is the active one.
+  Future<void> updateConfig(KubeConfig config) async {
+    await KubeConfig.saveConfig(config);
+    final wasActive = _activeConfig?.id == config.id;
+    _availableConfigs = await KubeConfig.loadConfigs();
+    if (wasActive) {
+      await setConfig(_availableConfigs.firstWhere((c) => c.id == config.id, orElse: () => config));
+    } else {
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteConfig(String id) async {
+    await KubeConfig.deleteConfig(id);
+    if (_activeConfig?.id == id) {
       _activeConfig = null;
     }
     await refreshConfigs();
   }
 
-  Future<ManifestApplyResult> applyManifest(String yamlOrJson) async {
-    final result = await _activeClient.applyManifest(yamlOrJson, targetNamespace: _currentNamespace);
+  Future<ManifestApplyResult> applyManifest(String yamlOrJson, {bool forceConflicts = false}) async {
+    final result = await _activeClient.applyManifest(
+      yamlOrJson,
+      targetNamespace: _currentNamespace,
+      forceConflicts: forceConflicts,
+    );
     notifyListeners();
     return result;
   }

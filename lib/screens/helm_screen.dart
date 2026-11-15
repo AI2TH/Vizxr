@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_data_loader.dart';
 import 'yaml_editor_screen.dart';
 
 class HelmChartCatalogItem {
@@ -269,7 +270,8 @@ class HelmScreen extends StatefulWidget {
   State<HelmScreen> createState() => _HelmScreenState();
 }
 
-class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateMixin {
+class _HelmScreenState extends State<HelmScreen>
+    with SingleTickerProviderStateMixin, ClusterDataLoader<HelmScreen, List<HelmRelease>> {
   late TabController _tabController;
   String _searchQuery = '';
   String _selectedCategory = 'All';
@@ -288,6 +290,15 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+  }
+
+  /// Whether chart installs can work here (k3s helm-controller present).
+  Future<bool>? _canInstall;
+
+  @override
+  Future<List<HelmRelease>> load(ClusterState clusterState) {
+    _canInstall = clusterState.client.hasK3sHelmController();
+    return clusterState.client.fetchHelmReleases(namespace: clusterState.currentNamespace);
   }
 
   @override
@@ -374,8 +385,50 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
       return matchesCat && matchesSearch;
     }).toList();
 
+    return FutureBuilder<bool>(
+      future: _canInstall,
+      builder: (context, snapshot) {
+        // Until the check answers, keep Install enabled; the client refuses
+        // with the same explanation if the cluster has no helm-controller.
+        final readOnly = !clusterState.isDemo && snapshot.data == false;
+        return _buildCatalogColumn(context, clusterState, filtered, readOnly);
+      },
+    );
+  }
+
+  Widget _buildReadOnlyBanner() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: LensTheme.cardDecoration(borderColor: LensTheme.statusAmber.withOpacity(0.5), radius: 12),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.lock_outline_rounded, size: 18, color: LensTheme.statusAmber),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Read-only on this cluster. Vizxr installs charts through the k3s helm-controller '
+              '(HelmChart objects), which this cluster does not have. Install, upgrade, roll back and '
+              'uninstall with the helm CLI; the releases appear under Installed Releases.',
+              style: TextStyle(fontSize: 11, color: LensTheme.textSecondary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCatalogColumn(
+    BuildContext context,
+    ClusterState clusterState,
+    List<HelmChartCatalogItem> filtered,
+    bool readOnly,
+  ) {
     return Column(
       children: [
+        if (readOnly) _buildReadOnlyBanner(),
         // Search & Filter Header
         Container(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
@@ -465,7 +518,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
                   itemCount: filtered.length,
                   itemBuilder: (context, idx) {
                     final item = filtered[idx];
-                    return _buildChartCard(context, clusterState, item);
+                    return _buildChartCard(context, clusterState, item, readOnly: readOnly);
                   },
                 ),
         ),
@@ -476,8 +529,9 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
   Widget _buildChartCard(
     BuildContext context,
     ClusterState clusterState,
-    HelmChartCatalogItem item,
-  ) {
+    HelmChartCatalogItem item, {
+    bool readOnly = false,
+  }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: LensTheme.cardDecoration(radius: 12),
@@ -598,7 +652,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
                     textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
-                  onPressed: () => _openInstallSheet(context, clusterState, item),
+                  onPressed: readOnly ? null : () => _openInstallSheet(context, clusterState, item),
                 ),
               ],
             ),
@@ -621,7 +675,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
         item: item,
         clusterState: clusterState,
         onInstalled: () {
-          setState(() {});
+          reload();
           _tabController.animateTo(1);
         },
       ),
@@ -629,11 +683,10 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildInstalledReleasesTab(BuildContext context, ClusterState clusterState) {
-    final client = clusterState.client;
     final ns = clusterState.currentNamespace;
 
     return FutureBuilder<List<HelmRelease>>(
-      future: client.fetchHelmReleases(namespace: ns),
+      future: dataFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -913,7 +966,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(res.message)),
               );
-              setState(() {});
+              reload();
             },
             child: const Text('Confirm Rollback'),
           ),
@@ -956,7 +1009,7 @@ class _HelmScreenState extends State<HelmScreen> with SingleTickerProviderStateM
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(res.message)),
               );
-              setState(() {});
+              reload();
             },
             child: const Text('Uninstall'),
           ),

@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../services/port_forward_service.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_data_loader.dart';
 import '../widgets/resource_inspector_sheet.dart';
 import 'yaml_editor_screen.dart';
+import '../services/yaml_writer.dart';
 
 class NetworkingScreen extends StatefulWidget {
   const NetworkingScreen({super.key});
@@ -81,43 +84,19 @@ class _ServicesListView extends StatefulWidget {
   State<_ServicesListView> createState() => _ServicesListViewState();
 }
 
-class _ServicesListViewState extends State<_ServicesListView> {
-  Future<List<K8sResource>>? _future;
-  K8sClientService? _lastClient;
-  String? _lastNamespace;
+class _ServicesListViewState extends State<_ServicesListView> with ClusterDataLoader<_ServicesListView, List<K8sResource>> {
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final clusterState = Provider.of<ClusterState>(context);
-    _loadFuture(clusterState);
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(K8sResourceType.service, namespace: clusterState.currentNamespace);
 
-  void _loadFuture(ClusterState clusterState) {
-    _lastClient = clusterState.client;
-    _lastNamespace = clusterState.currentNamespace;
-    _future = clusterState.client.fetchResources(
-      K8sResourceType.service,
-      namespace: clusterState.currentNamespace,
-    );
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _loadFuture(clusterState);
-    });
-  }
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
     final clusterState = context.watch<ClusterState>();
     final isLive = clusterState.isLiveConnected;
     final isDemo = clusterState.isDemo;
-
-    if (_lastClient != clusterState.client || _lastNamespace != clusterState.currentNamespace || _future == null) {
-      _loadFuture(clusterState);
-    }
 
     if (!isLive && !isDemo) {
       return Center(
@@ -133,7 +112,7 @@ class _ServicesListViewState extends State<_ServicesListView> {
     }
 
     return FutureBuilder<List<K8sResource>>(
-      future: _future,
+      future: dataFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -150,7 +129,7 @@ class _ServicesListViewState extends State<_ServicesListView> {
         }
 
         return RefreshIndicator(
-          onRefresh: () async => _refresh(),
+          onRefresh: reload,
           color: LensTheme.cyanAccent,
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -314,7 +293,7 @@ class _ServicesListViewState extends State<_ServicesListView> {
                     MaterialPageRoute(
                       builder: (context) => YamlEditorScreen(
                         resourceName: svc.name,
-                        initialYaml: svc.rawYaml.entries.map((e) => '${e.key}: ${e.value}').join('\n'),
+                        initialYaml: manifestToYaml(svc.rawYaml),
                       ),
                     ),
                   );
@@ -338,42 +317,18 @@ class _IngressesListView extends StatefulWidget {
   State<_IngressesListView> createState() => _IngressesListViewState();
 }
 
-class _IngressesListViewState extends State<_IngressesListView> {
-  Future<List<K8sResource>>? _future;
-  K8sClientService? _lastClient;
-  String? _lastNamespace;
+class _IngressesListViewState extends State<_IngressesListView> with ClusterDataLoader<_IngressesListView, List<K8sResource>> {
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final clusterState = Provider.of<ClusterState>(context);
-    _loadFuture(clusterState);
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(K8sResourceType.ingress, namespace: clusterState.currentNamespace);
 
-  void _loadFuture(ClusterState clusterState) {
-    _lastClient = clusterState.client;
-    _lastNamespace = clusterState.currentNamespace;
-    _future = clusterState.client.fetchResources(
-      K8sResourceType.ingress,
-      namespace: clusterState.currentNamespace,
-    );
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _loadFuture(clusterState);
-    });
-  }
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
-    final clusterState = context.watch<ClusterState>();
-    if (_lastClient != clusterState.client || _lastNamespace != clusterState.currentNamespace || _future == null) {
-      _loadFuture(clusterState);
-    }
     return FutureBuilder<List<K8sResource>>(
-      future: _future,
+      future: dataFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -509,12 +464,17 @@ class _PortForwardsView extends StatelessWidget {
                 ),
               ),
               IconButton(
+                icon: const Icon(Icons.open_in_browser_rounded, color: LensTheme.cyanAccent, size: 20),
+                tooltip: 'Open in browser',
+                onPressed: f.isActive ? () => _openInBrowser(context, f) : null,
+              ),
+              IconButton(
                 icon: const Icon(Icons.copy_rounded, color: LensTheme.textSecondary, size: 18),
                 tooltip: 'Copy URL',
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: f.localUrl));
+                  Clipboard.setData(ClipboardData(text: f.browserUrl));
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Copied ${f.localUrl}')),
+                    SnackBar(content: Text('Copied ${f.browserUrl}')),
                   );
                 },
               ),
@@ -528,5 +488,16 @@ class _PortForwardsView extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _openInBrowser(BuildContext context, PortForward f) async {
+    final messenger = ScaffoldMessenger.of(context);
+    var opened = false;
+    try {
+      opened = await launchUrl(Uri.parse(f.browserUrl), mode: LaunchMode.externalApplication);
+    } catch (_) {}
+    if (!opened) {
+      messenger.showSnackBar(SnackBar(content: Text('No browser could open ${f.browserUrl}')));
+    }
   }
 }

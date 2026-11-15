@@ -1,15 +1,16 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
-import '../services/k8s_quantity.dart';
+import '../services/metrics_history.dart';
 import '../theme/lens_theme.dart';
 import '../screens/logs_screen.dart';
 import '../screens/pod_exec_screen.dart';
 import '../screens/yaml_editor_screen.dart';
 import 'sparkline_chart.dart';
+import 'usage_sparklines.dart';
+import '../services/yaml_writer.dart';
 
 class ResourceInspectorSheet extends StatefulWidget {
   final K8sResource resource;
@@ -45,6 +46,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
   late TabController _tabController;
   late K8sResource _res;
   late Future<List<K8sResource>> _eventsFuture;
+  bool _loaded = false;
 
   @override
   void initState() {
@@ -56,7 +58,18 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Load once when the sheet opens, not on every dependency change.
+    if (_loaded) return;
+    _loaded = true;
     _loadEvents();
+    final clusterState = context.read<ClusterState>();
+    if (!clusterState.isDemo && _res.type == K8sResourceType.pod) {
+      // One immediate sample so the tab is not empty until the next poll.
+      final sampler = clusterState.metrics;
+      clusterState.client.fetchPodMetrics(_res.namespace, _res.name).then((usage) {
+        if (usage != null) sampler.recordPod(_res.namespace, _res.name, usage);
+      });
+    }
   }
 
   void _loadEvents() {
@@ -241,7 +254,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                         MaterialPageRoute(
                           builder: (context) => YamlEditorScreen(
                             resourceName: _res.name,
-                            initialYaml: jsonEncode(_res.rawYaml),
+                            initialYaml: manifestToYaml(_res.rawYaml),
                           ),
                         ),
                       );
@@ -646,7 +659,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
 
   Widget _buildMetricsTab() {
     final clusterState = context.watch<ClusterState>();
-    if (!clusterState.isDemo) return _buildLiveMetricsTab(clusterState.client);
+    if (!clusterState.isDemo) return _buildLiveMetricsTab();
 
     // Demo cluster only: simulated 12-point curves around the mock usage.
     final cpuBase = _res.cpuUsage > 0 ? _res.cpuUsage : 0.12;
@@ -739,63 +752,36 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
     );
   }
 
-  /// Live clusters: current usage from metrics-server, no invented history.
-  Widget _buildLiveMetricsTab(K8sClientService client) {
+  /// Live clusters: usage from metrics-server with the history recorded
+  /// while Vizxr is open (no invented points).
+  Widget _buildLiveMetricsTab() {
     if (_res.type != K8sResourceType.pod) {
       return const Center(
         child: Text('Usage metrics are shown for pods.', style: TextStyle(color: LensTheme.textMuted, fontSize: 13)),
       );
     }
-    return FutureBuilder<({double cpuCores, double memBytes})?>(
-      future: client.fetchPodMetrics(_res.namespace, _res.name),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
-        }
-        final m = snapshot.data;
-        if (m == null) {
-          return const Padding(
-            padding: EdgeInsets.all(24),
-            child: Text(
-              'Metrics unavailable: install metrics-server, or wait for the first sample (about a minute after the pod starts).',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: LensTheme.textMuted, fontSize: 13),
-            ),
-          );
-        }
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _buildMetricRow(Icons.speed_rounded, 'CPU usage', K8sQuantity.formatCores(m.cpuCores), LensTheme.cyanAccent),
-            const SizedBox(height: 12),
-            _buildMetricRow(Icons.memory_rounded, 'Memory (working set)', K8sQuantity.formatBytes(m.memBytes), LensTheme.purpleAccent),
-            const SizedBox(height: 12),
-            const Text('Current sample from metrics.k8s.io', style: TextStyle(fontSize: 10, color: LensTheme.textMuted)),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildMetricRow(IconData icon, String label, String value, Color color) {
-    return Container(
+    final sampler = context.read<ClusterState>().metrics;
+    return ListView(
       padding: const EdgeInsets.all(16),
-      decoration: LensTheme.cardDecoration(radius: 14),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: color),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: LensTheme.textPrimary)),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: LensTheme.cardDecoration(radius: 14),
+          child: UsageSparklines(
+            sampler: sampler,
+            cpuKey: MetricsHistory.podCpu(_res.namespace, _res.name),
+            memKey: MetricsHistory.podMem(_res.namespace, _res.name),
+            large: true,
+            emptyText: 'Metrics unavailable: install metrics-server, or wait for the first sample '
+                '(about a minute after the pod starts).',
           ),
-          Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   Widget _buildYamlTab() {
-    final formatted = const JsonEncoder.withIndent('  ').convert(_res.rawYaml);
+    final formatted = manifestToYaml(_res.rawYaml);
 
     return Column(
       children: [
@@ -809,7 +795,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                 children: [
                   IconButton(
                     icon: const Icon(Icons.copy_rounded, size: 16, color: LensTheme.cyanAccent),
-                    tooltip: 'Copy JSON/YAML',
+                    tooltip: 'Copy YAML',
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: formatted));
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied manifest to clipboard')));
@@ -915,6 +901,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                     plural: _res.annotations['plural'] ?? '',
                     name: _res.name,
                     namespace: _res.namespace,
+                    clusterScoped: _res.annotations['scope']?.toLowerCase() == 'cluster',
                   );
                 } else {
                   await clusterState.client.deleteResource(_res.type, _res.name, _res.namespace);

@@ -6,6 +6,7 @@ import '../services/kubeconfig.dart';
 import '../theme/lens_theme.dart';
 import '../screens/add_cluster_screen.dart';
 import '../screens/crd_screen.dart';
+import '../screens/edit_cluster_screen.dart';
 import '../screens/helm_screen.dart';
 
 class ClusterDrawer extends StatelessWidget {
@@ -177,7 +178,7 @@ class ClusterDrawer extends StatelessWidget {
                 itemCount: clusterState.availableConfigs.length,
                 itemBuilder: (context, index) {
                   final config = clusterState.availableConfigs[index];
-                  final isActive = clusterState.activeConfig?.name == config.name;
+                  final isActive = clusterState.activeConfig?.id == config.id;
                   final isDemoItem = K8sClientService.isDemoServer(config.server);
 
                   return Container(
@@ -196,7 +197,7 @@ class ClusterDrawer extends StatelessWidget {
                       leading: Icon(
                         isDemoItem
                             ? Icons.auto_awesome_rounded
-                            : (config.server.contains('127.0.0.1') ? Icons.smartphone_rounded : Icons.cloud_queue_rounded),
+                            : (config.kind == ClusterKind.linxrOnPhone ? Icons.smartphone_rounded : Icons.cloud_queue_rounded),
                         color: isDemoItem
                             ? LensTheme.purpleAccent
                             : (isActive ? LensTheme.cyanAccent : LensTheme.textMuted),
@@ -212,15 +213,43 @@ class ClusterDrawer extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      subtitle: Text(
-                        config.server,
-                        style: const TextStyle(fontSize: 10, color: LensTheme.textMuted, fontFamily: 'monospace'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      subtitle: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              config.server,
+                              style: const TextStyle(fontSize: 10, color: LensTheme.textMuted, fontFamily: 'monospace'),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (config.insecureSkipTlsVerify && !isDemoItem) ...[
+                            const SizedBox(width: 6),
+                            const InsecureTlsBadge(),
+                          ],
+                        ],
                       ),
-                      trailing: isActive
-                          ? const Icon(Icons.check_circle_rounded, color: LensTheme.cyanAccent, size: 18)
-                          : null,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (isActive)
+                            const Icon(Icons.check_circle_rounded, color: LensTheme.cyanAccent, size: 18),
+                          if (!isDemoItem)
+                            IconButton(
+                              tooltip: 'Edit cluster',
+                              icon: const Icon(Icons.edit_rounded, size: 16, color: LensTheme.textMuted),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (_) => EditClusterScreen(config: config)),
+                                );
+                              },
+                            ),
+                        ],
+                      ),
                       onTap: () {
                         clusterState.setConfig(config);
                         Navigator.pop(context);
@@ -340,8 +369,7 @@ class ClusterDrawer extends StatelessWidget {
                       Navigator.pop(context);
                       final detected = await KubeConfig.autoDetectLinxrKubeconfig();
                       if (detected != null) {
-                        await clusterState.refreshConfigs();
-                        await clusterState.setConfig(detected);
+                        await clusterState.addConfig(detected);
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(content: Text('Imported cluster: ${detected.name}')),
                         );

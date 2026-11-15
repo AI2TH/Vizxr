@@ -1,10 +1,11 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
+import '../widgets/cluster_data_loader.dart';
 import '../theme/lens_theme.dart';
 import 'yaml_editor_screen.dart';
+import '../services/yaml_writer.dart';
 
 class CrdScreen extends StatefulWidget {
   const CrdScreen({super.key});
@@ -13,40 +14,21 @@ class CrdScreen extends StatefulWidget {
   State<CrdScreen> createState() => _CrdScreenState();
 }
 
-class _CrdScreenState extends State<CrdScreen> {
-  Future<List<K8sResource>>? _crdFuture;
-  K8sClientService? _lastClient;
+class _CrdScreenState extends State<CrdScreen> with ClusterDataLoader<CrdScreen, List<K8sResource>> {
   String _searchQuery = '';
   String _selectedGroup = 'All';
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final clusterState = Provider.of<ClusterState>(context);
-    _loadFuture(clusterState);
-  }
+  Future<List<K8sResource>> load(ClusterState clusterState) =>
+      clusterState.client.fetchResources(K8sResourceType.customResourceDefinition);
 
-  void _loadFuture(ClusterState clusterState) {
-    _lastClient = clusterState.client;
-    _crdFuture = clusterState.client.fetchResources(K8sResourceType.customResourceDefinition);
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _loadFuture(clusterState);
-    });
-  }
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
     final clusterState = context.watch<ClusterState>();
     final isLive = clusterState.isLiveConnected;
     final isDemo = clusterState.isDemo;
-
-    if (_lastClient != clusterState.client || _crdFuture == null) {
-      _loadFuture(clusterState);
-    }
 
     return Scaffold(
       backgroundColor: LensTheme.bgDark,
@@ -151,7 +133,7 @@ spec:
               ),
             )
           : FutureBuilder<List<K8sResource>>(
-              future: _crdFuture,
+              future: dataFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: LensTheme.purpleAccent));
@@ -510,7 +492,7 @@ spec:
                               MaterialPageRoute(
                                 builder: (context) => YamlEditorScreen(
                                   resourceName: crd.name,
-                                  initialYaml: jsonEncode(crd.rawYaml),
+                                  initialYaml: manifestToYaml(crd.rawYaml),
                                 ),
                               ),
                             );
@@ -590,8 +572,8 @@ class CustomResourceInstancesScreen extends StatefulWidget {
   State<CustomResourceInstancesScreen> createState() => _CustomResourceInstancesScreenState();
 }
 
-class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesScreen> {
-  late Future<List<K8sResource>> _instancesFuture;
+class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesScreen>
+    with ClusterDataLoader<CustomResourceInstancesScreen, List<K8sResource>> {
   String _search = '';
 
   String get group => widget.crd.annotations['group'] ?? '';
@@ -602,22 +584,15 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
   bool get isNamespaced => scope.toLowerCase() == 'namespaced';
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _refresh();
-  }
-
-  void _refresh() {
-    final clusterState = context.read<ClusterState>();
-    setState(() {
-      _instancesFuture = clusterState.client.fetchCustomResourceObjects(
+  Future<List<K8sResource>> load(ClusterState clusterState) => clusterState.client.fetchCustomResourceObjects(
         group: group,
         version: version,
         plural: plural,
         namespace: isNamespaced ? clusterState.currentNamespace : null,
+        clusterScoped: !isNamespaced,
       );
-    });
-  }
+
+  void _refresh() => reload();
 
   @override
   Widget build(BuildContext context) {
@@ -728,7 +703,7 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
           // Object list
           Expanded(
             child: FutureBuilder<List<K8sResource>>(
-              future: _instancesFuture,
+              future: dataFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: LensTheme.purpleAccent));
@@ -900,7 +875,7 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
                     MaterialPageRoute(
                       builder: (context) => YamlEditorScreen(
                         resourceName: item.name,
-                        initialYaml: jsonEncode(item.rawYaml),
+                        initialYaml: manifestToYaml(item.rawYaml),
                       ),
                     ),
                   );
@@ -932,7 +907,9 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
           ],
         ),
         content: Text(
-          'Delete "$kind" named "${item.name}" from namespace "${item.namespace}"?',
+          isNamespaced
+              ? 'Delete "$kind" named "${item.name}" from namespace "${item.namespace}"?'
+              : 'Delete cluster-scoped "$kind" named "${item.name}"?',
           style: const TextStyle(fontSize: 13, color: LensTheme.textSecondary),
         ),
         actions: [
@@ -952,6 +929,7 @@ class _CustomResourceInstancesScreenState extends State<CustomResourceInstancesS
                 plural: plural,
                 name: item.name,
                 namespace: item.namespace,
+                clusterScoped: !isNamespaced,
               );
               _refresh();
               if (mounted) {

@@ -3,9 +3,12 @@ import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
 import '../services/k8s_quantity.dart';
+import '../services/metrics_history.dart';
 import '../theme/lens_theme.dart';
 import '../widgets/cluster_metrics_panel.dart';
+import '../widgets/usage_sparklines.dart';
 import 'crd_screen.dart';
+import 'edit_cluster_screen.dart';
 import 'events_screen.dart';
 import 'helm_screen.dart';
 import 'yaml_editor_screen.dart';
@@ -20,10 +23,54 @@ class ClusterScreen extends StatefulWidget {
 class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
+  // Requests live here, not in build(): they start when the cluster,
+  // namespace or connection changes, or on pull-to-refresh.
+  Future<List<K8sResource>>? _telemetryFuture;
+  Future<List<K8sResource>>? _nodesFuture;
+  Object? _loadedKey;
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final clusterState = Provider.of<ClusterState>(context);
+    final key = (
+      clusterState.client,
+      clusterState.currentNamespace,
+      clusterState.isLiveConnected || clusterState.isDemo,
+    );
+    if (key == _loadedKey) return;
+    _loadedKey = key;
+    _load(clusterState);
+  }
+
+  void _load(ClusterState clusterState) {
+    if (!clusterState.isLiveConnected && !clusterState.isDemo) {
+      _telemetryFuture = null;
+      _nodesFuture = null;
+      return;
+    }
+    final client = clusterState.client;
+    final ns = clusterState.currentNamespace;
+    _telemetryFuture = Future.wait([
+      client.fetchResources(K8sResourceType.pod, namespace: ns),
+      client.fetchResources(K8sResourceType.deployment, namespace: ns),
+      client.fetchEvents(namespace: ns),
+    ]).then((r) => [...r[0], ...r[1], ...r[2]]);
+    _nodesFuture = client.fetchResources(K8sResourceType.node);
+  }
+
+  Future<void> _reload() async {
+    setState(() => _load(context.read<ClusterState>()));
+    await Future.wait([
+      if (_telemetryFuture != null) _telemetryFuture!.then((_) {}, onError: (_) {}),
+      if (_nodesFuture != null) _nodesFuture!.then((_) {}, onError: (_) {}),
+    ]);
   }
 
   @override
@@ -197,6 +244,10 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (config != null && config.insecureSkipTlsVerify && !isDemo) ...[
+                const SizedBox(width: 8),
+                const InsecureTlsBadge(),
+              ],
               const SizedBox(width: 8),
               LensTheme.namespaceBadge(clusterState.currentNamespace, fontSize: 10, context: context),
             ],
@@ -216,15 +267,10 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
       return _buildDisconnectedDiagnosticView(context, clusterState);
     }
 
-    final client = clusterState.client;
     final ns = clusterState.currentNamespace;
 
     return FutureBuilder<List<K8sResource>>(
-      future: Future.wait([
-        client.fetchResources(K8sResourceType.pod, namespace: ns),
-        client.fetchResources(K8sResourceType.deployment, namespace: ns),
-        client.fetchEvents(namespace: ns),
-      ]).then((r) => [...r[0], ...r[1], ...r[2]]),
+      future: _telemetryFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -240,69 +286,74 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
         final failedPods = pods.where((p) => p.status.toLowerCase().contains('fail') || p.status.toLowerCase().contains('crash')).length;
         final completedPods = pods.where((p) => p.status.toLowerCase().contains('completed')).length;
 
-        return ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          children: [
-            // Pod Health Donut / Breakdown Card
-            _buildWorkloadBreakdownCard(
-              totalPods: pods.length,
-              running: runningPods,
-              pending: pendingPods,
-              failed: failedPods,
-              completed: completedPods,
-              deployments: deps.length,
-              namespace: ns,
-            ),
-            const SizedBox(height: 14),
+        return RefreshIndicator(
+          color: LensTheme.cyanAccent,
+          onRefresh: _reload,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            children: [
+              // Pod Health Donut / Breakdown Card
+              _buildWorkloadBreakdownCard(
+                totalPods: pods.length,
+                running: runningPods,
+                pending: pendingPods,
+                failed: failedPods,
+                completed: completedPods,
+                deployments: deps.length,
+                namespace: ns,
+              ),
+              const SizedBox(height: 14),
 
-            // Telemetry Gauges (CPU & Memory) from metrics-server
-            ClusterMetricsPanel(client: client),
-            const SizedBox(height: 14),
+              // Telemetry Gauges (CPU & Memory) from metrics-server
+              ClusterMetricsPanel(sampler: clusterState.metrics),
+              const SizedBox(height: 14),
 
-            // Quick Actions Dock
-            _buildQuickActionsDock(context, clusterState),
-            const SizedBox(height: 16),
+              // Quick Actions Dock
+              _buildQuickActionsDock(context, clusterState),
+              const SizedBox(height: 16),
 
-            // Recent Cluster Events Feed
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'RECENT CLUSTER EVENTS',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.1,
-                    color: LensTheme.textMuted,
+              // Recent Cluster Events Feed
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'RECENT CLUSTER EVENTS',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1,
+                      color: LensTheme.textMuted,
+                    ),
                   ),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const EventsScreen()),
-                    );
-                  },
-                  child: const Text('View All', style: TextStyle(fontSize: 12)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            if (events.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: LensTheme.cardDecoration(radius: 12),
-                child: const Center(
-                  child: Text(
-                    'No cluster events recorded for active namespace.',
-                    style: TextStyle(fontSize: 12, color: LensTheme.textMuted),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const EventsScreen()),
+                      );
+                    },
+                    child: const Text('View All', style: TextStyle(fontSize: 12)),
                   ),
-                ),
-              )
-            else
-              ...events.take(5).map((e) => _buildEventItem(e)),
-            const SizedBox(height: 24),
-          ],
+                ],
+              ),
+              const SizedBox(height: 6),
+              if (events.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: LensTheme.cardDecoration(radius: 12),
+                  child: const Center(
+                    child: Text(
+                      'No cluster events recorded for active namespace.',
+                      style: TextStyle(fontSize: 12, color: LensTheme.textMuted),
+                    ),
+                  ),
+                )
+              else
+                ...events.take(5).map((e) => _buildEventItem(e)),
+              const SizedBox(height: 24),
+            ],
+          ),
         );
       },
     );
@@ -705,7 +756,7 @@ spec:
     }
 
     return FutureBuilder<List<K8sResource>>(
-      future: clusterState.client.fetchResources(K8sResourceType.node),
+      future: _nodesFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
@@ -728,14 +779,19 @@ spec:
             child: Text('No nodes found.', style: TextStyle(color: LensTheme.textMuted, fontSize: 13)),
           );
         }
-        return ListView(
-          padding: const EdgeInsets.all(14),
-          children: [
-            for (final node in nodes) ...[
-              _buildNodeCard(node),
-              const SizedBox(height: 12),
+        return RefreshIndicator(
+          color: LensTheme.cyanAccent,
+          onRefresh: _reload,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(14),
+            children: [
+              for (final node in nodes) ...[
+                _buildNodeCard(node),
+                const SizedBox(height: 12),
+              ],
             ],
-          ],
+          ),
         );
       },
     );
@@ -813,6 +869,13 @@ spec:
           if (mem != null) _buildNodeAttribute('Allocatable memory', K8sQuantity.formatBytes(mem)),
           if (pods != null) _buildNodeAttribute('Max pods', pods.toString()),
           _buildNodeAttribute('Age', node.age),
+          // Usage history recorded by the metrics sampler (nothing shown
+          // without metrics-server).
+          UsageSparklines(
+            sampler: context.read<ClusterState>().metrics,
+            cpuKey: MetricsHistory.nodeCpu(node.name),
+            memKey: MetricsHistory.nodeMem(node.name),
+          ),
         ],
       ),
     );

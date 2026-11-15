@@ -37,6 +37,15 @@ class PortForward {
   int get openConnections => _sockets.length;
 
   String get localUrl => 'http://localhost:$localPort';
+
+  /// URL to open in a browser: https for the usual TLS ports, http otherwise.
+  String get browserUrl => browserUrlFor(containerPort, localPort);
+
+  static String browserUrlFor(int remotePort, int localPort) {
+    const tlsPorts = {443, 8443, 9443};
+    final scheme = tlsPorts.contains(remotePort) ? 'https' : 'http';
+    return '$scheme://localhost:$localPort';
+  }
 }
 
 /// Forwards local TCP ports to pod ports through the Kubernetes

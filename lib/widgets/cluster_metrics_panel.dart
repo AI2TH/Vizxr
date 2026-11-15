@@ -1,106 +1,64 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
-import '../services/k8s_client.dart';
 import '../services/k8s_quantity.dart';
+import '../services/metrics_history.dart';
 import '../theme/lens_theme.dart';
 import 'sparkline_chart.dart';
 
 /// Cluster CPU and memory gauges backed by metrics-server.
 ///
-/// Polls [K8sClientService.fetchClusterMetrics] every [interval] while the
-/// widget is mounted and keeps the last [historyLength] samples for the
-/// sparklines. Shows "Metrics unavailable" when metrics-server is missing.
+/// The [sampler] (owned by `ClusterState`) polls while this panel or another
+/// metrics view is shown and keeps the history, so the sparklines survive
+/// leaving the screen. Shows "Metrics unavailable" when metrics-server is
+/// missing.
 class ClusterMetricsPanel extends StatefulWidget {
-  final K8sClientService client;
-  final Duration interval;
-  final int historyLength;
+  final MetricsSampler sampler;
 
-  const ClusterMetricsPanel({
-    super.key,
-    required this.client,
-    this.interval = const Duration(seconds: 15),
-    this.historyLength = 20,
-  });
+  const ClusterMetricsPanel({super.key, required this.sampler});
 
   @override
   State<ClusterMetricsPanel> createState() => _ClusterMetricsPanelState();
 }
 
 class _ClusterMetricsPanelState extends State<ClusterMetricsPanel> {
-  Timer? _timer;
-  ClusterMetrics? _latest;
-  Object? _error;
-  bool _loading = true;
-  final List<double> _cpuHistory = [];
-  final List<double> _memHistory = [];
-
   @override
   void initState() {
     super.initState();
-    _start();
+    widget.sampler.acquire();
   }
 
   @override
   void didUpdateWidget(covariant ClusterMetricsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.client != widget.client || oldWidget.interval != widget.interval) {
-      _timer?.cancel();
-      _cpuHistory.clear();
-      _memHistory.clear();
-      _latest = null;
-      _error = null;
-      _loading = true;
-      _start();
+    if (oldWidget.sampler != widget.sampler) {
+      oldWidget.sampler.release();
+      widget.sampler.acquire();
     }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    widget.sampler.release();
     super.dispose();
-  }
-
-  void _start() {
-    _poll();
-    _timer = Timer.periodic(widget.interval, (_) => _poll());
-  }
-
-  Future<void> _poll() async {
-    final client = widget.client;
-    try {
-      final metrics = await client.fetchClusterMetrics();
-      if (!mounted || client != widget.client) return;
-      setState(() {
-        _latest = metrics;
-        _error = null;
-        _loading = false;
-        if (metrics.metricsAvailable) {
-          _cpuHistory.add(metrics.cpuUsageCores!);
-          _memHistory.add(metrics.memUsageBytes!);
-          while (_cpuHistory.length > widget.historyLength) {
-            _cpuHistory.removeAt(0);
-          }
-          while (_memHistory.length > widget.historyLength) {
-            _memHistory.removeAt(0);
-          }
-        }
-      });
-    } catch (e) {
-      if (!mounted || client != widget.client) return;
-      setState(() {
-        _error = e;
-        _loading = false;
-      });
-    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final metrics = _latest;
+    return ListenableBuilder(
+      listenable: widget.sampler,
+      builder: (context, _) => _buildPanel(),
+    );
+  }
 
-    if (_loading && metrics == null) {
+  Widget _buildPanel() {
+    final sampler = widget.sampler;
+    final metrics = sampler.latest;
+    final loading = sampler.loading;
+    final error = sampler.error;
+    final cpuHistory = sampler.history.series(MetricsHistory.clusterCpu);
+    final memHistory = sampler.history.series(MetricsHistory.clusterMem);
+
+    if (loading && metrics == null) {
       return Container(
         height: 120,
         decoration: LensTheme.cardDecoration(radius: 14),
@@ -109,7 +67,7 @@ class _ClusterMetricsPanelState extends State<ClusterMetricsPanel> {
     }
 
     if (metrics == null || !metrics.metricsAvailable) {
-      final reason = metrics?.unavailableReason ?? 'Metrics unavailable: $_error';
+      final reason = metrics?.unavailableReason ?? 'Metrics unavailable: $error';
       return Container(
         padding: const EdgeInsets.all(14),
         decoration: LensTheme.cardDecoration(
@@ -160,7 +118,7 @@ class _ClusterMetricsPanelState extends State<ClusterMetricsPanel> {
             fraction: metrics.cpuFraction,
             gradient: LensTheme.cyanGradient,
             icon: Icons.speed_rounded,
-            history: _cpuHistory,
+            history: cpuHistory,
           ),
         ),
         const SizedBox(width: 10),
@@ -172,7 +130,7 @@ class _ClusterMetricsPanelState extends State<ClusterMetricsPanel> {
             fraction: metrics.memFraction,
             gradient: LensTheme.purpleGradient,
             icon: Icons.memory_rounded,
-            history: _memHistory,
+            history: memHistory,
           ),
         ),
       ],

@@ -38,4 +38,10 @@ void main() {
     expect(PortForwardService.activeForwards, isEmpty);
     client.close();
   });
+
+  test('browser URL uses https for TLS ports', () {
+    expect(PortForward.browserUrlFor(80, 8080), 'http://localhost:8080');
+    expect(PortForward.browserUrlFor(443, 8443), 'https://localhost:8443');
+    expect(PortForward.browserUrlFor(3000, 3000), 'http://localhost:3000');
+  });
 }

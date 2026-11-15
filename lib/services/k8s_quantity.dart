@@ -83,6 +83,9 @@ class ClusterMetrics {
   /// Why usage is missing, for display. Null when usage is available.
   final String? unavailableReason;
 
+  /// Usage per node name, from the same metrics.k8s.io sample.
+  final Map<String, ({double cpuCores, double memBytes})> nodeUsage;
+
   const ClusterMetrics({
     required this.nodeCount,
     required this.cpuAllocatableCores,
@@ -90,6 +93,7 @@ class ClusterMetrics {
     this.cpuUsageCores,
     this.memUsageBytes,
     this.unavailableReason,
+    this.nodeUsage = const {},
   });
 
   bool get metricsAvailable => cpuUsageCores != null && memUsageBytes != null;
@@ -123,6 +127,7 @@ class ClusterMetrics {
 
     double? cpuUse;
     double? memUse;
+    final perNode = <String, ({double cpuCores, double memBytes})>{};
     final metricsItems = nodeMetricsList?['items'] as List?;
     if (metricsItems != null) {
       var cpuSum = 0.0;
@@ -130,8 +135,12 @@ class ClusterMetrics {
       for (final item in metricsItems) {
         if (item is! Map || item['usage'] is! Map) continue;
         final usage = item['usage'] as Map;
-        cpuSum += K8sQuantity.tryParse(usage['cpu']) ?? 0;
-        memSum += K8sQuantity.tryParse(usage['memory']) ?? 0;
+        final cpu = K8sQuantity.tryParse(usage['cpu']) ?? 0;
+        final mem = K8sQuantity.tryParse(usage['memory']) ?? 0;
+        cpuSum += cpu;
+        memSum += mem;
+        final name = item['metadata'] is Map ? (item['metadata'] as Map)['name']?.toString() : null;
+        if (name != null) perNode[name] = (cpuCores: cpu, memBytes: mem);
       }
       cpuUse = cpuSum;
       memUse = memSum;
@@ -144,6 +153,7 @@ class ClusterMetrics {
       cpuUsageCores: cpuUse,
       memUsageBytes: memUse,
       unavailableReason: metricsItems == null ? (unavailableReason ?? 'Metrics unavailable') : null,
+      nodeUsage: perNode,
     );
   }
 }

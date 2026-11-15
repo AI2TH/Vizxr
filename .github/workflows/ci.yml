@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flutter:
+    name: flutter analyze and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Same version as docker/Dockerfile.build, which builds the APK.
+          flutter-version: '3.22.2'
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      # Infos (mostly deprecations) are reported but do not fail the build;
+      # warnings and errors do.
+      - run: flutter analyze --no-fatal-infos
+
+      - run: flutter test
+
+  gitleaks:
+    name: gitleaks secret scan
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.21.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The gitleaks binary is used instead of gitleaks-action, which needs a
+      # paid licence for organisation repositories.
+      - name: Install gitleaks
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "$base/$tarball"
+          curl -sSfLO "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "$tarball" gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # Pull requests: scan the commits the PR adds. Pushes to main: scan the
+      # files in the tree. Full history is not scanned because it still
+      # contains the cluster key removed in #6 until history is purged.
+      - name: Scan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            gitleaks git --redact --verbose --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+          else
+            gitleaks dir --redact --verbose .
+          fi
