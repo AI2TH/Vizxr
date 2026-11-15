@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'kubeconfig.dart';
 import 'k8s_client.dart';
+import 'port_forward_service.dart';
 
 class ClusterState extends ChangeNotifier {
   KubeConfig? _activeConfig;
@@ -41,17 +42,18 @@ class ClusterState extends ChangeNotifier {
 
   void _initClient() {
     final server = _activeConfig?.server ?? 'https://127.0.0.1:6443';
-    final name = _activeConfig?.name ?? '';
-    final isDemo = server.contains('demo.k8s.local') ||
-                   server.contains('simulation') ||
-                   name.toLowerCase().contains('demo') ||
-                   name.toLowerCase().contains('simulation');
+    // Decide demo mode from the server URL only: a real cluster named
+    // "demo-prod" must not be replaced by mock data.
+    final isDemo = K8sClientService.isDemoServer(server);
     final token = _activeConfig?.token;
     final caCert = _activeConfig?.caCert;
     final clientCert = _activeConfig?.clientCertData;
     final clientKey = _activeConfig?.clientKeyData;
-    final insecure = _activeConfig?.insecureSkipTlsVerify ?? true;
+    final insecure = _activeConfig?.insecureSkipTlsVerify ?? false;
 
+    // Tunnels use the old client's credentials; stop them with it.
+    PortForwardService.stopAll();
+    _activeClient.close();
     _activeClient = K8sClientService(
       baseUrl: server,
       token: token,

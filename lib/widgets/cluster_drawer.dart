@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
+import '../services/k8s_client.dart';
 import '../services/kubeconfig.dart';
 import '../theme/lens_theme.dart';
 import '../screens/add_cluster_screen.dart';
@@ -177,7 +178,7 @@ class ClusterDrawer extends StatelessWidget {
                 itemBuilder: (context, index) {
                   final config = clusterState.availableConfigs[index];
                   final isActive = clusterState.activeConfig?.name == config.name;
-                  final isDemoItem = config.name.contains('Demo') || config.server.contains('demo');
+                  final isDemoItem = K8sClientService.isDemoServer(config.server);
 
                   return Container(
                     margin: const EdgeInsets.symmetric(vertical: 4),

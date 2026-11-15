@@ -21,7 +21,8 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
   final TextEditingController _tokenController = TextEditingController();
   final TextEditingController _clientCertController = TextEditingController();
   final TextEditingController _clientKeyController = TextEditingController();
-  bool _insecure = true;
+  final TextEditingController _caCertController = TextEditingController();
+  bool _insecure = false;
   bool _isLoading = false;
 
   @override
@@ -40,6 +41,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
     _tokenController.dispose();
     _clientCertController.dispose();
     _clientKeyController.dispose();
+    _caCertController.dispose();
     super.dispose();
   }
 
@@ -92,26 +94,6 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
           style: TextStyle(fontSize: 12, color: LensTheme.textMuted),
         ),
         const SizedBox(height: 16),
-        _buildPresetCard(
-          title: 'User Test Cluster (kubernetes-admin@kubernetes)',
-          subtitle: 'https://172.16.0.2:6443 (mTLS credentials with loopback fallback)',
-          icon: Icons.security_rounded,
-          color: LensTheme.statusGreen,
-          onTap: () async {
-            setState(() => _isLoading = true);
-            try {
-              final config = await KubeConfig.addFromYaml(KubeConfig.testKubeconfigYaml);
-              await _saveAndFinish(config);
-            } catch (e) {
-              if (!mounted) return;
-              setState(() => _isLoading = false);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to load test cluster: $e'), backgroundColor: LensTheme.statusRed),
-              );
-            }
-          },
-        ),
-        const SizedBox(height: 10),
         _buildPresetCard(
           title: 'Auto-Detect Linxr / K3s Node',
           subtitle: 'Scan /sdcard/Linxr/k3s.yaml and shared storage',
@@ -286,19 +268,6 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
                       }
                     },
                   ),
-                  TextButton.icon(
-                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6)),
-                    icon: const Icon(Icons.play_circle_fill_rounded, size: 14, color: LensTheme.statusAmber),
-                    label: const Text('Insert Test Config', style: TextStyle(fontSize: 11, color: LensTheme.statusAmber)),
-                    onPressed: () {
-                      setState(() {
-                        _yamlController.text = KubeConfig.testKubeconfigYaml;
-                      });
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Inserted test kubeconfig (kubernetes-admin@kubernetes)!')),
-                      );
-                    },
-                  ),
                 ],
               ),
             ],
@@ -404,9 +373,18 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
           decoration: const InputDecoration(labelText: 'Client Private Key PEM / base64 (Optional)'),
         ),
         const SizedBox(height: 10),
+        TextField(
+          controller: _caCertController,
+          maxLines: 2,
+          decoration: const InputDecoration(labelText: 'Cluster CA Certificate PEM / base64 (Optional)'),
+        ),
+        const SizedBox(height: 10),
         SwitchListTile(
           title: const Text('Skip TLS Certificate Verification', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-          subtitle: const Text('Recommended for self-signed certificates and mobile local nodes', style: TextStyle(fontSize: 11, color: LensTheme.textMuted)),
+          subtitle: const Text(
+            'Insecure: anyone on the network path can read your credentials. Prefer pasting the cluster CA above.',
+            style: TextStyle(fontSize: 11, color: LensTheme.textMuted),
+          ),
           value: _insecure,
           activeColor: LensTheme.cyanAccent,
           onChanged: (val) => setState(() => _insecure = val),
@@ -424,6 +402,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
             final token = _tokenController.text.trim();
             final clientCert = _clientCertController.text.trim();
             final clientKey = _clientKeyController.text.trim();
+            final caCert = _caCertController.text.trim();
             if (name.isEmpty || server.isEmpty) return;
 
             final config = KubeConfig(
@@ -432,6 +411,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               token: token.isNotEmpty ? token : null,
               clientCertData: clientCert.isNotEmpty ? clientCert : null,
               clientKeyData: clientKey.isNotEmpty ? clientKey : null,
+              caCert: caCert.isNotEmpty ? caCert : null,
               insecureSkipTlsVerify: _insecure,
             );
             await _saveAndFinish(config);

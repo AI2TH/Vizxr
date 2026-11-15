@@ -41,7 +41,8 @@ users:
       expect(config.caCert, equals('Y2EtY2VydC1kYXRh'));
       expect(config.clientCertData, equals('Y2xpZW50LWNlcnQtZGF0YQ=='));
       expect(config.clientKeyData, equals('Y2xpZW50LWtleS1kYXRh'));
-      expect(config.insecureSkipTlsVerify, isTrue);
+      // No insecure-skip-tls-verify in the kubeconfig, so TLS must be verified.
+      expect(config.insecureSkipTlsVerify, isFalse);
     });
 
     test('loadConfigs ensures default local and demo clusters are present', () async {

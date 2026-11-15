@@ -211,7 +211,7 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
                 style: ElevatedButton.styleFrom(backgroundColor: LensTheme.purpleAccent, foregroundColor: Colors.white),
                 onPressed: () {
                   final demoConfig = clusterState.availableConfigs.firstWhere(
-                    (c) => c.name.contains('Demo') || c.server.contains('demo'),
+                    (c) => K8sClientService.isDemoServer(c.server),
                     orElse: () => clusterState.availableConfigs.first,
                   );
                   clusterState.setConfig(demoConfig);
@@ -351,7 +351,11 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
                               final parts = res.status.split('/');
                               final current = int.tryParse(parts.first.trim()) ?? 1;
                               final newReplicas = (current + delta).clamp(0, 50);
-                              await clusterState.client.scaleDeployment(res.name, res.namespace, newReplicas);
+                              try {
+                                await clusterState.client.scaleDeployment(res.name, res.namespace, newReplicas);
+                              } catch (e) {
+                                _showError('Scale failed: $e');
+                              }
                               _refresh();
                             }
                           : null,
@@ -363,6 +367,13 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
           ),
         ),
       ],
+    );
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: LensTheme.statusRed),
     );
   }
 
@@ -391,7 +402,12 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
       );
       if (modified == true) _refresh();
     } else if (action == 'restart') {
-      await clusterState.client.restartDeployment(res.name, res.namespace);
+      try {
+        await clusterState.client.restartDeployment(res.name, res.namespace);
+      } catch (e) {
+        _showError('Restart failed: $e');
+        return;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Triggered rollout restart for "${res.name}"')),
@@ -420,7 +436,12 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
       );
 
       if (confirm == true) {
-        await clusterState.client.deleteResource(res.type, res.name, res.namespace);
+        try {
+          await clusterState.client.deleteResource(res.type, res.name, res.namespace);
+        } catch (e) {
+          _showError('Delete failed: $e');
+          return;
+        }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Deleted ${res.type.name} "${res.name}"')),

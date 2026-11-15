@@ -81,4 +81,32 @@ spec:
       expect(events, isNotEmpty);
     });
   });
+
+  group('Manifest routing helpers', () {
+    test('pluralizeKind follows Kubernetes resource names', () {
+      expect(K8sClientService.pluralizeKind('Pod'), 'pods');
+      expect(K8sClientService.pluralizeKind('Ingress'), 'ingresses');
+      expect(K8sClientService.pluralizeKind('NetworkPolicy'), 'networkpolicies');
+      expect(K8sClientService.pluralizeKind('StorageClass'), 'storageclasses');
+      expect(K8sClientService.pluralizeKind('Prometheus'), 'prometheuses');
+      expect(K8sClientService.pluralizeKind('Gateway'), 'gateways');
+      expect(K8sClientService.pluralizeKind('Endpoints'), 'endpoints');
+    });
+
+    test('isClusterScopedKind knows common cluster-scoped kinds', () {
+      expect(K8sClientService.isClusterScopedKind('Namespace'), isTrue);
+      expect(K8sClientService.isClusterScopedKind('ClusterRole'), isTrue);
+      expect(K8sClientService.isClusterScopedKind('ServiceAccount'), isFalse);
+    });
+
+    test('applying a cluster-scoped manifest in demo mode succeeds', () async {
+      final result = await client.applyManifest('''
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: unit-test-ns
+''');
+      expect(result.success, isTrue);
+    });
+  });
 }

@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:yaml/yaml.dart';
+import 'k8s_quantity.dart';
 
 enum K8sResourceType {
   pod,
@@ -22,6 +24,12 @@ enum K8sResourceType {
 }
 
 class HelmRelease {
+  /// A release installed with the helm CLI (Helm v3 storage Secret).
+  static const String sourceHelm = 'Helm';
+
+  /// A k3s helm-controller `HelmChart` object (helm.cattle.io/v1).
+  static const String sourceK3s = 'k3s HelmChart';
+
   final String name;
   final String namespace;
   final String chart;
@@ -32,6 +40,8 @@ class HelmRelease {
   final String updated;
   final Map<String, dynamic> values;
   final String valuesYaml;
+  final String source;
+  final String description;
 
   HelmRelease({
     required this.name,
@@ -44,7 +54,11 @@ class HelmRelease {
     required this.updated,
     this.values = const {},
     this.valuesYaml = '',
+    this.source = sourceHelm,
+    this.description = '',
   });
+
+  bool get isK3sHelmChart => source == sourceK3s;
 }
 
 class ManifestApplyResult {
@@ -57,6 +71,38 @@ class ManifestApplyResult {
     required this.message,
     this.resource,
   });
+}
+
+/// The pod and container port behind a Service port, for port forwarding.
+class PortForwardTarget {
+  final String podName;
+  final int containerPort;
+  final int servicePort;
+
+  const PortForwardTarget({required this.podName, required this.containerPort, required this.servicePort});
+}
+
+/// An error response from the Kubernetes API server.
+class K8sApiException implements Exception {
+  final int statusCode;
+  final String message;
+  final Uri? uri;
+
+  const K8sApiException(this.statusCode, this.message, {this.uri});
+
+  @override
+  String toString() => message;
+
+  /// Builds the exception from a response, using the `message` of a
+  /// Kubernetes `Status` body when there is one.
+  factory K8sApiException.fromResponse(int statusCode, String body, Uri uri) {
+    var detail = body;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['message'] != null) detail = decoded['message'].toString();
+    } catch (_) {}
+    return K8sApiException(statusCode, 'HTTP $statusCode: $detail', uri: uri);
+  }
 }
 
 class K8sResource {
@@ -173,10 +219,23 @@ class K8sClientService {
     this.caCertData,
     this.clientCertData,
     this.clientKeyData,
-    this.insecureSkipTlsVerify = true,
+    this.insecureSkipTlsVerify = false,
     bool? isDemo,
-  }) : isDemo = isDemo ?? (baseUrl.contains('demo.k8s.local') || baseUrl.contains('simulation')) {
+  }) : isDemo = isDemo ?? isDemoServer(baseUrl) {
     _initHttpClient();
+  }
+
+  /// Host name of the built-in in-memory simulator.
+  static const String demoHost = 'demo.k8s.local';
+
+  /// True only for the simulator URL. A real cluster whose name or URL merely
+  /// contains "demo" must never be served mock data.
+  static bool isDemoServer(String url) => Uri.tryParse(url)?.host == demoHost;
+
+  /// Releases the underlying HTTP client. Call this when the client is
+  /// replaced (for example on a cluster switch) so sockets are not leaked.
+  void close() {
+    _httpClient?.close();
   }
 
   void _initHttpClient() {
@@ -200,6 +259,8 @@ class K8sClientService {
     }
 
     _httpClient = HttpClient(context: context);
+    // Only accept unverifiable certificates when the kubeconfig explicitly
+    // sets insecure-skip-tls-verify. Otherwise the default (reject) applies.
     if (insecureSkipTlsVerify) {
       _httpClient!.badCertificateCallback = (X509Certificate cert, String host, int port) => true;
     }
@@ -995,33 +1056,60 @@ master:
     ),
   ];
 
-  Future<dynamic> _request(String method, String endpoint, {dynamic body}) async {
-    dynamic lastError;
+  /// Sends one API request.
+  ///
+  /// The loopback / VM fallback URLs are only tried when the connection
+  /// itself fails. Once a server has answered, its HTTP error is thrown
+  /// as-is: retrying a POST or DELETE elsewhere could apply it twice and
+  /// would hide the real error (403, 409, 422...) behind a connect error.
+  Future<dynamic> _request(
+    String method,
+    String endpoint, {
+    dynamic body,
+    String? contentType,
+  }) async {
+    final client = _httpClient;
+    if (client == null) throw StateError('Kubernetes client is closed');
+    Object? lastError;
     final candidates = _candidateBaseUrls;
 
     for (final base in candidates) {
+      final uri = Uri.parse('$base$endpoint');
+      HttpClientResponse? resp;
       try {
-        final uri = Uri.parse('$base$endpoint');
-        final req = await _httpClient!.openUrl(method, uri).timeout(const Duration(seconds: 3));
+        final req = await client.openUrl(method, uri).timeout(const Duration(seconds: 5));
         req.headers.set('Accept', 'application/json');
         if (token != null && token!.isNotEmpty) {
           req.headers.set('Authorization', 'Bearer $token');
         }
         if (body != null) {
-          req.headers.set('Content-Type', 'application/json');
-          req.add(utf8.encode(jsonEncode(body)));
+          // PATCH needs a patch media type; plain application/json gets 415.
+          req.headers.set(
+            'Content-Type',
+            contentType ?? (method == 'PATCH' ? 'application/merge-patch+json' : 'application/json'),
+          );
+          req.add(utf8.encode(body is String ? body : jsonEncode(body)));
         }
-        final resp = await req.close().timeout(const Duration(seconds: 3));
-        final respBody = await resp.transform(utf8.decoder).join();
-        if (resp.statusCode >= 200 && resp.statusCode < 300) {
-          _workingBaseUrl = base;
-          if (respBody.trim().isEmpty) return {};
-          return jsonDecode(respBody);
-        }
-        throw HttpException('HTTP ${resp.statusCode}: $respBody', uri: uri);
-      } catch (e) {
+        resp = await req.close().timeout(const Duration(seconds: 30));
+      } on SocketException catch (e) {
         lastError = e;
+        continue;
+      } on TimeoutException catch (e) {
+        lastError = e;
+        continue;
+      } on HandshakeException catch (e) {
+        lastError = e;
+        continue;
       }
+      if (resp == null) continue;
+
+      final respBody = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        _workingBaseUrl = base;
+        if (respBody.trim().isEmpty) return <String, dynamic>{};
+        return jsonDecode(respBody);
+      }
+      throw K8sApiException.fromResponse(resp.statusCode, respBody, uri);
     }
     throw lastError ?? Exception('Failed request to $endpoint across $candidates');
   }
@@ -1237,8 +1325,6 @@ master:
       initContainers: initContainers,
       labels: labels,
       annotations: annotations,
-      cpuUsage: 0.1,
-      memUsage: 64.0,
     );
   }
 
@@ -1285,12 +1371,19 @@ master:
       final apiVersion = manifest['apiVersion']?.toString() ?? 'v1';
       final metadata = (manifest['metadata'] as Map<String, dynamic>?) ?? {};
       final name = metadata['name']?.toString();
-      String namespace = metadata['namespace']?.toString() ?? (targetNamespace ?? 'default');
-      if (namespace == 'all-namespaces') namespace = 'default';
-      manifest['metadata'] = {...metadata, 'name': name, 'namespace': namespace};
-
       if (kind == null || name == null) {
         return ManifestApplyResult(success: false, message: 'Manifest missing "kind" or "metadata.name"');
+      }
+
+      final clusterScoped = isClusterScopedKind(kind);
+      String namespace = clusterScoped
+          ? 'none'
+          : (metadata['namespace']?.toString() ?? (targetNamespace ?? 'default'));
+      if (namespace == 'all-namespaces') namespace = 'default';
+      if (clusterScoped) {
+        manifest['metadata'] = {...metadata}..remove('namespace');
+      } else {
+        manifest['metadata'] = {...metadata, 'name': name, 'namespace': namespace};
       }
 
       // If Demo mode, apply manifest directly to _mockStore or _mockCustomResources
@@ -1344,9 +1437,9 @@ master:
           message: '$kind "$name" created successfully in namespace "$namespace"',
           resource: created,
         );
-      } on HttpException catch (e) {
-        // If 409 Conflict (Already exists), execute PUT or PATCH (Update)
-        if (e.message.contains('409')) {
+      } on K8sApiException catch (e) {
+        // 409 Conflict means it already exists: replace it with PUT.
+        if (e.statusCode == 409) {
           final resp = await _request('PUT', resourcePath, body: manifest);
           final updated = _parseResource(resType, resp);
           return ManifestApplyResult(
@@ -1446,25 +1539,62 @@ master:
           'type': K8sResourceType.customResourceDefinition,
         };
       default:
-        if (apiVersion.contains('/')) {
-          final parts = apiVersion.split('/');
-          final group = parts[0];
-          final version = parts[1];
-          final plural = kind.toLowerCase().endsWith('s') ? kind.toLowerCase() : '${kind.toLowerCase()}s';
-          final isCluster = (namespace == 'none' || namespace.isEmpty || namespace == 'all-namespaces');
-          final coll = isCluster ? '/apis/$group/$version/$plural' : '/apis/$group/$version/namespaces/$namespace/$plural';
-          return {
-            'collectionPath': coll,
-            'resourcePath': '$coll/$name',
-            'type': K8sResourceType.customResource,
-          };
-        }
+        // Any other kind: build the REST path from apiVersion and kind.
+        // Core kinds (apiVersion "v1") live under /api/v1, the rest under
+        // /apis/<group>/<version>. Previously an unknown core kind such as
+        // Namespace or ServiceAccount was POSTed to the pods endpoint.
+        final prefix = apiVersion.contains('/') ? '/apis/$apiVersion' : '/api/$apiVersion';
+        final plural = pluralizeKind(kind);
+        final isCluster = isClusterScopedKind(kind) ||
+            namespace == 'none' ||
+            namespace.isEmpty ||
+            namespace == 'all-namespaces';
+        final coll = isCluster ? '$prefix/$plural' : '$prefix/namespaces/$namespace/$plural';
         return {
-          'collectionPath': '/api/v1/namespaces/$namespace/pods',
-          'resourcePath': '/api/v1/namespaces/$namespace/pods/$name',
-          'type': K8sResourceType.pod,
+          'collectionPath': coll,
+          'resourcePath': '$coll/$name',
+          'type': _typeFromKind(kind),
         };
     }
+  }
+
+  static const Set<String> _clusterScopedKinds = {
+    'namespace',
+    'node',
+    'persistentvolume',
+    'clusterrole',
+    'clusterrolebinding',
+    'storageclass',
+    'customresourcedefinition',
+    'priorityclass',
+    'ingressclass',
+    'runtimeclass',
+    'csidriver',
+    'csinode',
+    'volumeattachment',
+    'mutatingwebhookconfiguration',
+    'validatingwebhookconfiguration',
+    'validatingadmissionpolicy',
+    'validatingadmissionpolicybinding',
+    'apiservice',
+    'certificatesigningrequest',
+    'clusterissuer',
+    'volumesnapshotclass',
+  };
+
+  /// Whether a built-in or well-known kind is cluster-scoped.
+  static bool isClusterScopedKind(String kind) => _clusterScopedKinds.contains(kind.toLowerCase());
+
+  /// Lower-case plural resource name for a kind, following the English rules
+  /// Kubernetes uses (NetworkPolicy -> networkpolicies, Ingress -> ingresses).
+  static String pluralizeKind(String kind) {
+    final k = kind.toLowerCase();
+    if (k == 'endpoints') return k;
+    if (k.endsWith('s') || k.endsWith('x') || k.endsWith('ch') || k.endsWith('sh')) return '${k}es';
+    if (k.length > 1 && k.endsWith('y') && !'aeiou'.contains(k[k.length - 2])) {
+      return '${k.substring(0, k.length - 1)}ies';
+    }
+    return '${k}s';
   }
 
   K8sResourceType _typeFromKind(String kind) {
@@ -1561,7 +1691,9 @@ master:
         break;
     }
 
-    if (path.isEmpty) return;
+    if (path.isEmpty) {
+      throw UnsupportedError('Use deleteCustomResource() for custom resources');
+    }
 
     final body = force ? {'gracePeriodSeconds': 0, 'propagationPolicy': 'Background'} : null;
     await _request('DELETE', path, body: body);
@@ -1774,17 +1906,17 @@ master:
 
   Future<void> restartDeployment(String name, String namespace) async {
     if (isDemo) return;
-    try {
-      await _request('PATCH', '/apis/apps/v1/namespaces/$namespace/deployments/$name', body: {
-        'spec': {
-          'template': {
-            'metadata': {
-              'annotations': {'kubectl.kubernetes.io/restartedAt': DateTime.now().toIso8601String()}
-            }
+    // Same patch as `kubectl rollout restart`. Errors propagate so the UI does
+    // not report a restart that never happened.
+    await _request('PATCH', '/apis/apps/v1/namespaces/$namespace/deployments/$name', body: {
+      'spec': {
+        'template': {
+          'metadata': {
+            'annotations': {'kubectl.kubernetes.io/restartedAt': DateTime.now().toUtc().toIso8601String()}
           }
         }
-      });
-    } catch (_) {}
+      }
+    });
   }
 
   Future<String> fetchPodLogs(
@@ -1873,6 +2005,171 @@ master:
     }
   }
 
+  /// Opens a WebSocket to a pod subresource such as `exec` or `portforward`,
+  /// with this client's bearer token, CA, client certificate and
+  /// skip-verify setting (the same HttpClient is used for the upgrade).
+  ///
+  /// [query] values may be a String or an Iterable<String> for repeated
+  /// parameters (for example several `command` arguments).
+  Future<WebSocket> openPodWebSocket({
+    required String namespace,
+    required String pod,
+    required String subresource,
+    required Map<String, dynamic> query,
+    List<String> protocols = const ['v4.channel.k8s.io'],
+  }) {
+    final client = _httpClient;
+    if (client == null) throw StateError('Kubernetes client is closed');
+    final base = Uri.parse(effectiveBaseUrl);
+    final basePath = base.path.endsWith('/') ? base.path.substring(0, base.path.length - 1) : base.path;
+    final uri = base.replace(
+      scheme: base.scheme == 'http' ? 'ws' : 'wss',
+      path: '$basePath/api/v1/namespaces/${Uri.encodeComponent(namespace)}'
+          '/pods/${Uri.encodeComponent(pod)}/$subresource',
+      queryParameters: query,
+    );
+    return WebSocket.connect(
+      uri.toString(),
+      protocols: protocols,
+      headers: {
+        if (token != null && token!.isNotEmpty) 'Authorization': 'Bearer $token',
+      },
+      compression: CompressionOptions.compressionOff,
+      customClient: client,
+    ).timeout(const Duration(seconds: 15));
+  }
+
+  /// Resolves a Service port to a running pod and container port, like
+  /// `kubectl port-forward svc/NAME`: list pods matching the selector, take a
+  /// Running one, and map `targetPort` (a number or a named container port).
+  Future<PortForwardTarget> resolveServicePortForward(K8sResource service, {int? servicePort}) async {
+    final spec = service.rawYaml['spec'] is Map ? service.rawYaml['spec'] as Map : const {};
+    final selector = spec['selector'] is Map ? spec['selector'] as Map : const {};
+    if (selector.isEmpty) {
+      throw StateError('Service ${service.name} has no selector, so it has no pods to forward to');
+    }
+    final ports = spec['ports'] is List ? spec['ports'] as List : const [];
+    Map portSpec = const {};
+    for (final p in ports) {
+      if (p is Map && (servicePort == null || p['port'] == servicePort)) {
+        portSpec = p;
+        break;
+      }
+    }
+    if (portSpec.isEmpty) throw StateError('Service ${service.name} has no matching port');
+    final svcPort = (portSpec['port'] as num?)?.toInt() ?? 0;
+
+    final labelSelector = selector.entries.map((e) => '${e.key}=${e.value}').join(',');
+    final json = await _request(
+      'GET',
+      '/api/v1/namespaces/${service.namespace}/pods?labelSelector=${Uri.encodeQueryComponent(labelSelector)}',
+    );
+    Map? pod;
+    for (final item in (json['items'] as List?) ?? const []) {
+      if (item is! Map) continue;
+      final phase = item['status'] is Map ? (item['status'] as Map)['phase'] : null;
+      final deleting = item['metadata'] is Map && (item['metadata'] as Map)['deletionTimestamp'] != null;
+      if (phase == 'Running' && !deleting) {
+        pod = item;
+        break;
+      }
+    }
+    if (pod == null) throw StateError('No running pod matches service ${service.name}');
+
+    final targetPort = portSpec['targetPort'] ?? svcPort;
+    int? containerPort;
+    if (targetPort is num) {
+      containerPort = targetPort.toInt();
+    } else {
+      final asInt = int.tryParse(targetPort.toString());
+      if (asInt != null) {
+        containerPort = asInt;
+      } else {
+        // Named port: look it up in the pod's containers.
+        final podSpec = pod['spec'] is Map ? pod['spec'] as Map : const {};
+        for (final c in (podSpec['containers'] as List?) ?? const []) {
+          for (final p in (c is Map ? c['ports'] as List? : null) ?? const []) {
+            if (p is Map && p['name'] == targetPort) {
+              containerPort = (p['containerPort'] as num?)?.toInt();
+            }
+          }
+        }
+      }
+    }
+    if (containerPort == null) {
+      throw StateError('Could not resolve target port "$targetPort" of service ${service.name}');
+    }
+
+    final meta = pod['metadata'] is Map ? pod['metadata'] as Map : const {};
+    return PortForwardTarget(
+      podName: meta['name']?.toString() ?? '',
+      containerPort: containerPort,
+      servicePort: svcPort,
+    );
+  }
+
+  /// Current CPU (cores) and memory (bytes) of a pod, summed over its
+  /// containers, from metrics.k8s.io. Null when metrics-server is missing,
+  /// the pod has no sample yet, or in demo mode.
+  Future<({double cpuCores, double memBytes})?> fetchPodMetrics(String namespace, String name) async {
+    if (isDemo) return null;
+    try {
+      final json = await _request('GET', '/apis/metrics.k8s.io/v1beta1/namespaces/$namespace/pods/$name');
+      var cpu = 0.0;
+      var mem = 0.0;
+      for (final c in (json['containers'] as List?) ?? const []) {
+        if (c is! Map || c['usage'] is! Map) continue;
+        final usage = c['usage'] as Map;
+        cpu += K8sQuantity.tryParse(usage['cpu']) ?? 0;
+        mem += K8sQuantity.tryParse(usage['memory']) ?? 0;
+      }
+      return (cpuCores: cpu, memBytes: mem);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cluster-wide CPU and memory: allocatable from `/api/v1/nodes`, usage
+  /// from `metrics.k8s.io/v1beta1` node metrics. When metrics-server is not
+  /// installed (404) or not ready (503), usage is null and
+  /// [ClusterMetrics.unavailableReason] says why.
+  Future<ClusterMetrics> fetchClusterMetrics() async {
+    if (isDemo) {
+      final rnd = Random();
+      return ClusterMetrics(
+        nodeCount: 2,
+        cpuAllocatableCores: 8,
+        memAllocatableBytes: 16 * 1073741824.0,
+        cpuUsageCores: 1.2 + rnd.nextDouble() * 0.4,
+        memUsageBytes: (3.7 + rnd.nextDouble() * 0.2) * 1073741824.0,
+      );
+    }
+
+    final nodes = await _request('GET', '/api/v1/nodes');
+    Map<String, dynamic>? nodeMetrics;
+    String? reason;
+    try {
+      final json = await _request('GET', '/apis/metrics.k8s.io/v1beta1/nodes');
+      if (json is Map<String, dynamic>) nodeMetrics = json;
+    } on K8sApiException catch (e) {
+      if (e.statusCode == 404 || e.statusCode == 503) {
+        reason = 'Metrics unavailable: install metrics-server';
+      } else if (e.statusCode == 403) {
+        reason = 'Metrics unavailable: no permission to read metrics.k8s.io';
+      } else {
+        reason = 'Metrics unavailable: ${e.message}';
+      }
+    } catch (e) {
+      reason = 'Metrics unavailable: $e';
+    }
+
+    return ClusterMetrics.fromLists(
+      nodeList: nodes is Map<String, dynamic> ? nodes : null,
+      nodeMetricsList: nodeMetrics,
+      unavailableReason: reason,
+    );
+  }
+
   Future<List<K8sResource>> fetchEvents({String? namespace}) async {
     final ns = (namespace == null || namespace == 'all-namespaces') ? null : namespace;
 
@@ -1921,7 +2218,7 @@ master:
 
     final List<HelmRelease> releases = [];
 
-    // 1. Check K3s native HelmChart custom resources (helm.cattle.io/v1)
+    // 1. k3s helm-controller HelmChart objects (helm.cattle.io/v1).
     try {
       final path = ns != null
           ? '/apis/helm.cattle.io/v1/namespaces/$ns/helmcharts'
@@ -1932,22 +2229,27 @@ master:
         for (final item in items) {
           final meta = item['metadata'] as Map<String, dynamic>? ?? {};
           final spec = item['spec'] as Map<String, dynamic>? ?? {};
+          final conditions = item['status'] is Map ? (item['status'] as Map)['conditions'] : null;
+          final failed = conditions is List &&
+              conditions.any((c) => c is Map && c['type'] == 'Failed' && c['status'] == 'True');
           releases.add(HelmRelease(
             name: meta['name']?.toString() ?? '',
             namespace: meta['namespace']?.toString() ?? 'default',
             chart: spec['chart']?.toString() ?? meta['name']?.toString() ?? '',
             version: spec['version']?.toString() ?? 'latest',
-            appVersion: spec['version']?.toString() ?? '1.0',
+            appVersion: spec['version']?.toString() ?? '',
             revision: 1,
-            status: item['status']?['jobStatus']?.toString() ?? 'deployed',
+            status: failed ? 'failed' : 'applied',
             updated: _calculateAge(meta['creationTimestamp']?.toString()),
             valuesYaml: spec['valuesContent']?.toString() ?? '',
+            source: HelmRelease.sourceK3s,
           ));
         }
       }
     } catch (_) {}
 
-    // 2. Check standard Helm v3 release secrets (owner=helm)
+    // 2. Helm v3 releases, stored as Secrets labelled owner=helm with one
+    //    Secret per revision. Keep the latest revision of each release.
     try {
       final path = ns != null
           ? '/api/v1/namespaces/$ns/secrets?labelSelector=owner%3Dhelm'
@@ -1955,30 +2257,75 @@ master:
       final json = await _request('GET', path);
       final items = json['items'] as List?;
       if (items != null) {
+        final latest = <String, Map>{};
+        final latestRevision = <String, int>{};
         for (final item in items) {
-          final meta = item['metadata'] as Map<String, dynamic>? ?? {};
-          final labels = meta['labels'] as Map<String, dynamic>? ?? {};
-          final name = labels['name']?.toString() ?? meta['name']?.toString() ?? '';
-          final version = int.tryParse(labels['version']?.toString() ?? '1') ?? 1;
-          final status = labels['status']?.toString() ?? 'deployed';
-          final relNs = meta['namespace']?.toString() ?? 'default';
-          if (!releases.any((r) => r.name == name && r.namespace == relNs)) {
-            releases.add(HelmRelease(
-              name: name,
-              namespace: relNs,
-              chart: name,
-              version: 'v$version',
-              appVersion: '1.0',
-              revision: version,
-              status: status,
-              updated: _calculateAge(meta['creationTimestamp']?.toString()),
-            ));
+          if (item is! Map || item['type'] != 'helm.sh/release.v1') continue;
+          final meta = item['metadata'] is Map ? item['metadata'] as Map : const {};
+          final labels = meta['labels'] is Map ? meta['labels'] as Map : const {};
+          final key = '${meta['namespace']}/${labels['name'] ?? meta['name']}';
+          final revision = int.tryParse(labels['version']?.toString() ?? '') ?? 0;
+          if (!latest.containsKey(key) || revision > latestRevision[key]!) {
+            latest[key] = item;
+            latestRevision[key] = revision;
           }
+        }
+        for (final secret in latest.values) {
+          final release = decodeHelmReleaseSecret(secret);
+          if (release != null) releases.add(release);
         }
       }
     } catch (_) {}
 
+    releases.sort((a, b) {
+      final byNs = a.namespace.compareTo(b.namespace);
+      return byNs != 0 ? byNs : a.name.compareTo(b.name);
+    });
     return releases;
+  }
+
+  /// Decodes a Helm v3 storage Secret (type helm.sh/release.v1).
+  ///
+  /// `data.release` is base64 (Secret encoding) of base64 (Helm's encoding)
+  /// of a gzipped JSON release. Returns null when it cannot be decoded.
+  static HelmRelease? decodeHelmReleaseSecret(Map secret) {
+    try {
+      final data = secret['data'];
+      if (data is! Map || data['release'] == null) return null;
+      final helmEncoded = utf8.decode(base64Decode(data['release'].toString().trim()));
+      List<int> payload = base64Decode(helmEncoded.trim());
+      if (payload.length > 2 && payload[0] == 0x1f && payload[1] == 0x8b) {
+        payload = gzip.decode(payload);
+      }
+      final json = jsonDecode(utf8.decode(payload));
+      if (json is! Map) return null;
+
+      final info = json['info'] is Map ? json['info'] as Map : const {};
+      final chart = json['chart'] is Map ? json['chart'] as Map : const {};
+      final chartMeta = chart['metadata'] is Map ? chart['metadata'] as Map : const {};
+      final config = json['config'] is Map
+          ? Map<String, dynamic>.from(json['config'] as Map)
+          : <String, dynamic>{};
+      final lastDeployed = info['last_deployed']?.toString() ?? '';
+
+      return HelmRelease(
+        name: json['name']?.toString() ?? '',
+        namespace: json['namespace']?.toString() ?? 'default',
+        chart: chartMeta['name']?.toString() ?? '',
+        version: chartMeta['version']?.toString() ?? '',
+        appVersion: chartMeta['appVersion']?.toString() ?? '',
+        revision: (json['version'] as num?)?.toInt() ?? 1,
+        status: info['status']?.toString() ?? 'unknown',
+        updated: lastDeployed.length >= 19 ? lastDeployed.substring(0, 19).replaceFirst('T', ' ') : lastDeployed,
+        values: config,
+        // JSON is valid YAML, and package:yaml has no writer.
+        valuesYaml: config.isEmpty ? '' : const JsonEncoder.withIndent('  ').convert(config),
+        source: HelmRelease.sourceHelm,
+        description: info['description']?.toString() ?? '',
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<ManifestApplyResult> installHelmRelease({
@@ -2032,12 +2379,20 @@ master:
   Future<ManifestApplyResult> uninstallHelmRelease({
     required String name,
     required String namespace,
+    String source = HelmRelease.sourceK3s,
   }) async {
     if (isDemo) {
       _mockHelmReleases.removeWhere((r) => r.name == name && r.namespace == namespace);
       return ManifestApplyResult(
         success: true,
         message: 'Helm release "$name" uninstalled successfully.',
+      );
+    }
+
+    if (source != HelmRelease.sourceK3s) {
+      return ManifestApplyResult(
+        success: false,
+        message: 'Helm v3 releases are read-only in Vizxr. Run "helm uninstall $name -n $namespace".',
       );
     }
 
@@ -2077,9 +2432,12 @@ master:
       );
     }
 
+    // Neither source supports a safe rollback over raw REST: Helm v3 rollback
+    // needs the Helm SDK (re-render and three-way merge), and a k3s HelmChart
+    // has no revision history. Do not report a rollback that never happened.
     return ManifestApplyResult(
-      success: true,
-      message: 'Rollback request dispatched for "$name".',
+      success: false,
+      message: 'Rollback is not supported from Vizxr. Run "helm rollback $name $targetRevision -n $namespace".',
     );
   }
 }
