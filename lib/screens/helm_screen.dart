@@ -292,9 +292,14 @@ class _HelmScreenState extends State<HelmScreen>
     _tabController = TabController(length: 2, vsync: this);
   }
 
+  /// Whether chart installs can work here (k3s helm-controller present).
+  Future<bool>? _canInstall;
+
   @override
-  Future<List<HelmRelease>> load(ClusterState clusterState) =>
-      clusterState.client.fetchHelmReleases(namespace: clusterState.currentNamespace);
+  Future<List<HelmRelease>> load(ClusterState clusterState) {
+    _canInstall = clusterState.client.hasK3sHelmController();
+    return clusterState.client.fetchHelmReleases(namespace: clusterState.currentNamespace);
+  }
 
   @override
   void dispose() {
@@ -380,8 +385,50 @@ class _HelmScreenState extends State<HelmScreen>
       return matchesCat && matchesSearch;
     }).toList();
 
+    return FutureBuilder<bool>(
+      future: _canInstall,
+      builder: (context, snapshot) {
+        // Until the check answers, keep Install enabled; the client refuses
+        // with the same explanation if the cluster has no helm-controller.
+        final readOnly = !clusterState.isDemo && snapshot.data == false;
+        return _buildCatalogColumn(context, clusterState, filtered, readOnly);
+      },
+    );
+  }
+
+  Widget _buildReadOnlyBanner() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: LensTheme.cardDecoration(borderColor: LensTheme.statusAmber.withOpacity(0.5), radius: 12),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.lock_outline_rounded, size: 18, color: LensTheme.statusAmber),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Read-only on this cluster. Vizxr installs charts through the k3s helm-controller '
+              '(HelmChart objects), which this cluster does not have. Install, upgrade, roll back and '
+              'uninstall with the helm CLI; the releases appear under Installed Releases.',
+              style: TextStyle(fontSize: 11, color: LensTheme.textSecondary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCatalogColumn(
+    BuildContext context,
+    ClusterState clusterState,
+    List<HelmChartCatalogItem> filtered,
+    bool readOnly,
+  ) {
     return Column(
       children: [
+        if (readOnly) _buildReadOnlyBanner(),
         // Search & Filter Header
         Container(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
@@ -471,7 +518,7 @@ class _HelmScreenState extends State<HelmScreen>
                   itemCount: filtered.length,
                   itemBuilder: (context, idx) {
                     final item = filtered[idx];
-                    return _buildChartCard(context, clusterState, item);
+                    return _buildChartCard(context, clusterState, item, readOnly: readOnly);
                   },
                 ),
         ),
@@ -482,8 +529,9 @@ class _HelmScreenState extends State<HelmScreen>
   Widget _buildChartCard(
     BuildContext context,
     ClusterState clusterState,
-    HelmChartCatalogItem item,
-  ) {
+    HelmChartCatalogItem item, {
+    bool readOnly = false,
+  }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: LensTheme.cardDecoration(radius: 12),
@@ -604,7 +652,7 @@ class _HelmScreenState extends State<HelmScreen>
                     textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
-                  onPressed: () => _openInstallSheet(context, clusterState, item),
+                  onPressed: readOnly ? null : () => _openInstallSheet(context, clusterState, item),
                 ),
               ],
             ),

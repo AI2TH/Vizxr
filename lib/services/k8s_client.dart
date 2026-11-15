@@ -2505,9 +2505,30 @@ master:
           if (valuesYaml != null && valuesYaml.isNotEmpty) 'valuesContent': valuesYaml,
         },
       };
-      return await applyManifest(jsonEncode(payload));
+      final result = await applyManifest(jsonEncode(payload));
+      if (!result.success && result.message.contains('HTTP 404')) {
+        return ManifestApplyResult(success: false, message: k3sHelmOnlyMessage);
+      }
+      return result;
     } catch (e) {
       return ManifestApplyResult(success: false, message: 'Failed to deploy chart: $e');
+    }
+  }
+
+  /// Why chart installs are unavailable outside k3s.
+  static const String k3sHelmOnlyMessage =
+      'Installing charts needs the k3s helm-controller (HelmChart objects, helm.cattle.io/v1), which this '
+      'cluster does not have. Install charts with the helm CLI; Vizxr lists the resulting releases read-only.';
+
+  /// Whether the cluster serves helm.cattle.io/v1 (k3s and RKE2 ship its
+  /// helm-controller). Without it Vizxr's Helm screen is read-only.
+  Future<bool> hasK3sHelmController() async {
+    if (isDemo) return true;
+    try {
+      await _request('GET', '/apis/helm.cattle.io/v1');
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
