@@ -105,6 +105,18 @@ class ClusterState extends ChangeNotifier {
     await setConfig(config);
   }
 
+  /// Saves changes to an existing cluster. Reconnects when it is the active one.
+  Future<void> updateConfig(KubeConfig config) async {
+    await KubeConfig.saveConfig(config);
+    final wasActive = _activeConfig?.storageKey == config.storageKey;
+    _availableConfigs = await KubeConfig.loadConfigs();
+    if (wasActive) {
+      await setConfig(_availableConfigs.firstWhere((c) => c.storageKey == config.storageKey, orElse: () => config));
+    } else {
+      notifyListeners();
+    }
+  }
+
   Future<void> deleteConfig(String name) async {
     await KubeConfig.deleteConfig(name);
     if (_activeConfig?.name == name) {

@@ -6,6 +6,7 @@ import '../services/k8s_quantity.dart';
 import '../theme/lens_theme.dart';
 import '../widgets/cluster_metrics_panel.dart';
 import 'crd_screen.dart';
+import 'edit_cluster_screen.dart';
 import 'events_screen.dart';
 import 'helm_screen.dart';
 import 'yaml_editor_screen.dart';
@@ -197,6 +198,10 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (config != null && config.insecureSkipTlsVerify && !isDemo) ...[
+                const SizedBox(width: 8),
+                const InsecureTlsBadge(),
+              ],
               const SizedBox(width: 8),
               LensTheme.namespaceBadge(clusterState.currentNamespace, fontSize: 10, context: context),
             ],

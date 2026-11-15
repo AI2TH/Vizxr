@@ -25,6 +25,27 @@ class KubeConfig {
     this.insecureSkipTlsVerify = false,
   });
 
+  KubeConfig copyWith({
+    String? name,
+    String? server,
+    String? token,
+    String? caCert,
+    String? clientCertData,
+    String? clientKeyData,
+    String? defaultNamespace,
+    bool? insecureSkipTlsVerify,
+  }) =>
+      KubeConfig(
+        name: name ?? this.name,
+        server: server ?? this.server,
+        token: token ?? this.token,
+        caCert: caCert ?? this.caCert,
+        clientCertData: clientCertData ?? this.clientCertData,
+        clientKeyData: clientKeyData ?? this.clientKeyData,
+        defaultNamespace: defaultNamespace ?? this.defaultNamespace,
+        insecureSkipTlsVerify: insecureSkipTlsVerify ?? this.insecureSkipTlsVerify,
+      );
+
   /// Everything except the credentials. This is what goes to SharedPreferences.
   Map<String, dynamic> toJson() => {
     'name': name,

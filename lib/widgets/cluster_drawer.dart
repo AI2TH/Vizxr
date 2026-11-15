@@ -6,6 +6,7 @@ import '../services/kubeconfig.dart';
 import '../theme/lens_theme.dart';
 import '../screens/add_cluster_screen.dart';
 import '../screens/crd_screen.dart';
+import '../screens/edit_cluster_screen.dart';
 import '../screens/helm_screen.dart';
 
 class ClusterDrawer extends StatelessWidget {
@@ -212,15 +213,43 @@ class ClusterDrawer extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      subtitle: Text(
-                        config.server,
-                        style: const TextStyle(fontSize: 10, color: LensTheme.textMuted, fontFamily: 'monospace'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      subtitle: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              config.server,
+                              style: const TextStyle(fontSize: 10, color: LensTheme.textMuted, fontFamily: 'monospace'),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (config.insecureSkipTlsVerify && !isDemoItem) ...[
+                            const SizedBox(width: 6),
+                            const InsecureTlsBadge(),
+                          ],
+                        ],
                       ),
-                      trailing: isActive
-                          ? const Icon(Icons.check_circle_rounded, color: LensTheme.cyanAccent, size: 18)
-                          : null,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (isActive)
+                            const Icon(Icons.check_circle_rounded, color: LensTheme.cyanAccent, size: 18),
+                          if (!isDemoItem)
+                            IconButton(
+                              tooltip: 'Edit cluster',
+                              icon: const Icon(Icons.edit_rounded, size: 16, color: LensTheme.textMuted),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (_) => EditClusterScreen(config: config)),
+                                );
+                              },
+                            ),
+                        ],
+                      ),
                       onTap: () {
                         clusterState.setConfig(config);
                         Navigator.pop(context);
