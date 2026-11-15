@@ -1103,7 +1103,6 @@ master:
         lastError = e;
         continue;
       }
-      if (resp == null) continue;
 
       final respBody = await resp.transform(utf8.decoder).join();
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
