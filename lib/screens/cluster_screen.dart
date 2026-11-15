@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
+import '../services/k8s_quantity.dart';
 import '../theme/lens_theme.dart';
+import '../widgets/cluster_metrics_panel.dart';
 import 'crd_screen.dart';
 import 'events_screen.dart';
 import 'helm_screen.dart';
@@ -253,34 +255,12 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
             ),
             const SizedBox(height: 14),
 
-            // Telemetry Gauges (CPU & Memory)
-            Row(
-              children: [
-                Expanded(
-                  child: _buildResourceGauge(
-                    title: 'Cluster CPU',
-                    usageText: '1.4 / 8.0 Cores',
-                    percentage: 0.18,
-                    gradient: LensTheme.cyanGradient,
-                    icon: Icons.speed_rounded,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _buildResourceGauge(
-                    title: 'Cluster Memory',
-                    usageText: '3.8 / 16.0 GiB',
-                    percentage: 0.24,
-                    gradient: LensTheme.purpleGradient,
-                    icon: Icons.memory_rounded,
-                  ),
-                ),
-              ],
-            ),
+            // Telemetry Gauges (CPU & Memory) from metrics-server
+            ClusterMetricsPanel(client: client),
             const SizedBox(height: 14),
 
             // Quick Actions Dock
-            _buildQuickActionsDock(context),
+            _buildQuickActionsDock(context, clusterState),
             const SizedBox(height: 16),
 
             // Recent Cluster Events Feed
@@ -554,61 +534,7 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
     );
   }
 
-  Widget _buildResourceGauge({
-    required String title,
-    required String usageText,
-    required double percentage,
-    required LinearGradient gradient,
-    required IconData icon,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: LensTheme.cardDecoration(radius: 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 16, color: gradient.colors.first),
-              const SizedBox(width: 6),
-              Text(title, style: const TextStyle(fontSize: 12, color: LensTheme.textSecondary, fontWeight: FontWeight.w600)),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(
-            usageText,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
-          ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: SizedBox(
-              height: 6,
-              child: Stack(
-                children: [
-                  Container(color: Colors.white.withOpacity(0.08)),
-                  FractionallySizedBox(
-                    widthFactor: percentage.clamp(0.05, 1.0),
-                    child: Container(decoration: BoxDecoration(gradient: gradient)),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Text(
-              '${(percentage * 100).toInt()}% utilized',
-              style: TextStyle(fontSize: 10, color: gradient.colors.first, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickActionsDock(BuildContext context) {
+  Widget _buildQuickActionsDock(BuildContext context, ClusterState clusterState) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: LensTheme.cardDecoration(radius: 14),
@@ -681,7 +607,7 @@ spec:
             color: LensTheme.statusGreen,
             onTap: () {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('mTLS Auth: Client Certificate & RSA Key active')),
+                SnackBar(content: Text(_describeAuth(clusterState))),
               );
             },
           ),
@@ -778,45 +704,135 @@ spec:
       return _buildDisconnectedDiagnosticView(context, clusterState);
     }
 
-    return ListView(
-      padding: const EdgeInsets.all(14),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: LensTheme.cardDecoration(
-            borderColor: LensTheme.statusGreen.withOpacity(0.3),
-            radius: 16,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.dns_rounded, color: LensTheme.cyanAccent, size: 22),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'linxr-master',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
-                  ),
-                  const Spacer(),
-                  LensTheme.statusBadge('Ready'),
-                ],
+    return FutureBuilder<List<K8sResource>>(
+      future: clusterState.client.fetchResources(K8sResourceType.node),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
+        }
+        if (snapshot.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'Could not list nodes: ${snapshot.error}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12, color: LensTheme.statusRed),
               ),
+            ),
+          );
+        }
+        final nodes = snapshot.data ?? const <K8sResource>[];
+        if (nodes.isEmpty) {
+          return const Center(
+            child: Text('No nodes found.', style: TextStyle(color: LensTheme.textMuted, fontSize: 13)),
+          );
+        }
+        return ListView(
+          padding: const EdgeInsets.all(14),
+          children: [
+            for (final node in nodes) ...[
+              _buildNodeCard(node),
               const SizedBox(height: 12),
-              const Divider(height: 1, color: LensTheme.borderSubtle),
-              const SizedBox(height: 12),
-              _buildNodeAttribute('Role', 'control-plane, master'),
-              _buildNodeAttribute('Architecture', 'aarch64 (ARM64 Cortex-A76)'),
-              _buildNodeAttribute('OS / Kernel', 'Alpine Linux v3.20 (Linux 6.6.54-virt)'),
-              _buildNodeAttribute('Container Runtime', 'containerd://1.7.22'),
-              _buildNodeAttribute('Kubelet Version', 'v1.28.2+k0s'),
-              _buildNodeAttribute('Internal IP', '10.244.0.1 (Loopback Hostfwd)'),
-              _buildNodeAttribute('Pods Capacity', '110 Max Pods'),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  /// Renders one node from a real Node object, or from the flat mock data
+  /// used in demo mode.
+  Widget _buildNodeCard(K8sResource node) {
+    final raw = node.rawYaml;
+    final status = raw['status'] is Map ? raw['status'] as Map : const {};
+    final info = status['nodeInfo'] is Map ? status['nodeInfo'] as Map : const {};
+    final allocatable = status['allocatable'] is Map
+        ? status['allocatable'] as Map
+        : (raw['capacity'] is Map ? raw['capacity'] as Map : const {});
+
+    final roles = node.labels.keys
+        .where((k) => k.startsWith('node-role.kubernetes.io/'))
+        .map((k) => k.substring('node-role.kubernetes.io/'.length))
+        .where((r) => r.isNotEmpty)
+        .toList();
+
+    String? internalIp;
+    if (status['addresses'] is List) {
+      for (final a in status['addresses'] as List) {
+        if (a is Map && a['type'] == 'InternalIP') {
+          internalIp = a['address']?.toString();
+          break;
+        }
+      }
+    }
+
+    final arch = info['architecture'] ?? raw['architecture'];
+    final os = info['osImage'] ?? raw['os'];
+    final kernel = info['kernelVersion'] ?? raw['kernel'];
+    final runtime = info['containerRuntimeVersion'];
+    final kubelet = info['kubeletVersion'] ?? raw['kubeletVersion'];
+    final cpu = K8sQuantity.tryParse(allocatable['cpu']);
+    final mem = K8sQuantity.tryParse(allocatable['memory']);
+    final pods = allocatable['pods'];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: LensTheme.cardDecoration(
+        borderColor: (node.status == 'Ready' ? LensTheme.statusGreen : LensTheme.statusRed).withOpacity(0.3),
+        radius: 16,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.dns_rounded, color: LensTheme.cyanAccent, size: 22),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  node.name,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: LensTheme.textPrimary),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              LensTheme.statusBadge(node.status),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 12),
+          const Divider(height: 1, color: LensTheme.borderSubtle),
+          const SizedBox(height: 12),
+          _buildNodeAttribute('Roles', roles.isEmpty ? '<none>' : roles.join(', ')),
+          if (arch != null) _buildNodeAttribute('Architecture', arch.toString()),
+          if (os != null) _buildNodeAttribute('OS image', os.toString()),
+          if (kernel != null) _buildNodeAttribute('Kernel', kernel.toString()),
+          if (runtime != null) _buildNodeAttribute('Container runtime', runtime.toString()),
+          if (kubelet != null) _buildNodeAttribute('Kubelet version', kubelet.toString()),
+          if (internalIp != null) _buildNodeAttribute('Internal IP', internalIp),
+          if (cpu != null) _buildNodeAttribute('Allocatable CPU', '${K8sQuantity.formatCores(cpu)} cores'),
+          if (mem != null) _buildNodeAttribute('Allocatable memory', K8sQuantity.formatBytes(mem)),
+          if (pods != null) _buildNodeAttribute('Max pods', pods.toString()),
+          _buildNodeAttribute('Age', node.age),
+        ],
+      ),
     );
+  }
+
+  String _describeAuth(ClusterState clusterState) {
+    final config = clusterState.activeConfig;
+    if (clusterState.isDemo || config == null) return 'Demo cluster: no authentication';
+    final String auth;
+    if (config.clientCertData != null && config.clientKeyData != null) {
+      auth = 'client certificate (mTLS)';
+    } else if (config.token != null && config.token!.isNotEmpty) {
+      auth = 'bearer token';
+    } else {
+      auth = 'no credentials';
+    }
+    final tls = config.insecureSkipTlsVerify
+        ? 'TLS verification OFF (insecure-skip-tls-verify)'
+        : (config.caCert != null ? 'TLS verified with cluster CA' : 'TLS verified with system CAs');
+    return 'Auth: $auth. $tls.';
   }
 
   Widget _buildNodeAttribute(String label, String value) {

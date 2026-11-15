@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:yaml/yaml.dart';
+import 'k8s_quantity.dart';
 
 enum K8sResourceType {
   pod,
@@ -1975,6 +1977,47 @@ master:
     } catch (e) {
       yield 'Stream connection error: Cluster unreachable ($e)\n';
     }
+  }
+
+  /// Cluster-wide CPU and memory: allocatable from `/api/v1/nodes`, usage
+  /// from `metrics.k8s.io/v1beta1` node metrics. When metrics-server is not
+  /// installed (404) or not ready (503), usage is null and
+  /// [ClusterMetrics.unavailableReason] says why.
+  Future<ClusterMetrics> fetchClusterMetrics() async {
+    if (isDemo) {
+      final rnd = Random();
+      return ClusterMetrics(
+        nodeCount: 2,
+        cpuAllocatableCores: 8,
+        memAllocatableBytes: 16 * 1073741824.0,
+        cpuUsageCores: 1.2 + rnd.nextDouble() * 0.4,
+        memUsageBytes: (3.7 + rnd.nextDouble() * 0.2) * 1073741824.0,
+      );
+    }
+
+    final nodes = await _request('GET', '/api/v1/nodes');
+    Map<String, dynamic>? nodeMetrics;
+    String? reason;
+    try {
+      final json = await _request('GET', '/apis/metrics.k8s.io/v1beta1/nodes');
+      if (json is Map<String, dynamic>) nodeMetrics = json;
+    } on K8sApiException catch (e) {
+      if (e.statusCode == 404 || e.statusCode == 503) {
+        reason = 'Metrics unavailable: install metrics-server';
+      } else if (e.statusCode == 403) {
+        reason = 'Metrics unavailable: no permission to read metrics.k8s.io';
+      } else {
+        reason = 'Metrics unavailable: ${e.message}';
+      }
+    } catch (e) {
+      reason = 'Metrics unavailable: $e';
+    }
+
+    return ClusterMetrics.fromLists(
+      nodeList: nodes is Map<String, dynamic> ? nodes : null,
+      nodeMetricsList: nodeMetrics,
+      unavailableReason: reason,
+    );
   }
 
   Future<List<K8sResource>> fetchEvents({String? namespace}) async {
