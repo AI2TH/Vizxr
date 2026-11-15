@@ -215,13 +215,13 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
                   if (path.isEmpty) return;
                   setState(() => _isLoading = true);
                   try {
-                    final config = await KubeConfig.addFromFilePath(path);
+                    final config = await KubeConfig.parseFile(path);
                     await _saveAndFinish(config);
                   } catch (e) {
                     if (!mounted) return;
                     setState(() => _isLoading = false);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to read file: $e'), backgroundColor: LensTheme.statusRed),
+                      SnackBar(content: Text('Failed to read file: ${e is FormatException ? e.message : e}'), backgroundColor: LensTheme.statusRed),
                     );
                   }
                 },
@@ -305,13 +305,13 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               if (text.isEmpty) return;
               setState(() => _isLoading = true);
               try {
-                final config = await KubeConfig.addFromYaml(text);
+                final config = KubeConfig.parseKubeconfig(text);
                 await _saveAndFinish(config);
               } catch (e) {
                 if (!mounted) return;
                 setState(() => _isLoading = false);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error: $e'), backgroundColor: LensTheme.statusRed),
+                  SnackBar(content: Text(e is FormatException ? e.message : 'Error: $e'), backgroundColor: LensTheme.statusRed),
                 );
               }
             },

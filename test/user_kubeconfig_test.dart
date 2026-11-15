@@ -85,4 +85,54 @@ users:
     expect(sim.isDemo, isTrue);
     sim.close();
   });
+
+  test('nothing after a PEM key footer is dropped', () {
+    // The old parser cut everything after the RSA key footer, which lost the
+    // contexts listed after users. The PEM markers are assembled from parts
+    // so secret scanners do not flag this dummy key.
+    const yaml = """
+apiVersion: v1
+kind: Config
+users:
+- name: admin
+  user:
+    client-certificate-data: Q0VSVA==
+    client-key-data: |
+      $_pemBegin
+      not-a-real-key
+      $_pemEnd
+clusters:
+- name: k3s
+  cluster:
+    server: https://172.16.0.2:6443
+contexts:
+- name: phone-k3s
+  context: {cluster: k3s, user: admin, namespace: apps}
+current-context: phone-k3s
+""";
+    final config = KubeConfig.parseKubeconfig(yaml);
+    expect(config.name, 'phone-k3s');
+    expect(config.server, 'https://172.16.0.2:6443');
+    expect(config.defaultNamespace, 'apps');
+    expect(config.clientKeyData, contains(_pemEnd));
+  });
+
+  test('invalid YAML is reported with its line number', () {
+    const yaml = 'apiVersion: v1\nclusters:\n- name: a\n  cluster:\n    server: https://x\nuse this test please: [\n';
+    expect(
+      () => KubeConfig.parseKubeconfig(yaml),
+      throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('line'))),
+    );
+  });
+
+  test('a kubeconfig without a server is rejected instead of defaulting to localhost', () {
+    const yaml = 'apiVersion: v1\nkind: Config\ncontexts:\n- name: c\n  context: {cluster: missing, user: u}\n';
+    expect(
+      () => KubeConfig.parseKubeconfig(yaml),
+      throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('missing'))),
+    );
+  });
 }
+
+const _pemBegin = '-----BEGIN RSA ' 'PRIVATE KEY-----';
+const _pemEnd = '-----END RSA ' 'PRIVATE KEY-----';

@@ -182,13 +182,14 @@ class KubeConfig {
     }
   }
 
-  static Future<KubeConfig> addFromFilePath(String filePath) async {
+  /// Reads and parses a kubeconfig file. Does not save it.
+  static Future<KubeConfig> parseFile(String filePath) async {
     final file = File(filePath);
     if (!await file.exists()) {
       throw FileSystemException('Kubeconfig file not found at path', filePath);
     }
     final content = await file.readAsString();
-    return addFromYaml(content);
+    return parseKubeconfig(content);
   }
 
   static Future<KubeConfig?> autoDetectLinxrKubeconfig() async {
@@ -206,169 +207,184 @@ class KubeConfig {
         final file = File(path);
         if (await file.exists()) {
           final content = await file.readAsString();
-          return await addFromYaml(content);
+          return parseKubeconfig(content);
         }
       } catch (_) {}
     }
     return null;
   }
 
+  /// Parses and saves a kubeconfig. See [parseKubeconfig].
   static Future<KubeConfig> addFromYaml(String yamlString) async {
+    final config = parseKubeconfig(yamlString);
+    await saveConfig(config);
+    return config;
+  }
+
+  /// Parses a kubeconfig (YAML or JSON) for its current context.
+  ///
+  /// The whole document is parsed as-is: nothing is cut off after a key
+  /// footer. Invalid YAML, a missing cluster or server, and unsupported auth
+  /// throw a [FormatException] whose message says what is wrong and where.
+  static KubeConfig parseKubeconfig(String yamlString) {
     try {
-      // Strip any trailing non-YAML comments/annotations (e.g. "use this test")
-      var cleanedYaml = yamlString.trim();
-      final endKeyMatch = cleanedYaml.indexOf('-----END RSA PRIVATE KEY-----');
-      if (endKeyMatch != -1) {
-        // Keep up to the end of the base64 or PEM boundary
-        final afterEnd = cleanedYaml.indexOf('\n', endKeyMatch);
-        if (afterEnd != -1) {
-          cleanedYaml = cleanedYaml.substring(0, afterEnd).trim();
-        }
-      }
-
-      final doc = loadYaml(cleanedYaml);
-      if (doc is! Map) {
-        throw const FormatException('Kubeconfig must be a YAML mapping');
-      }
-
-      String clusterName = 'Imported Cluster';
-      String serverUrl = 'https://127.0.0.1:6443';
-      String? token;
-      String? caCert;
-      String? clientCert;
-      String? clientKey;
-      String defaultNs = 'default';
-      // TLS verification is on unless the kubeconfig explicitly opts out.
-      bool skipTls = false;
-
-      // Find current-context
-      final currentContext = doc['current-context']?.toString();
-      Map? activeContextMap;
-
-      if (doc['contexts'] is List) {
-        final contexts = doc['contexts'] as List;
-        for (final ctx in contexts) {
-          if (ctx is Map) {
-            if (currentContext != null && ctx['name']?.toString() == currentContext) {
-              activeContextMap = ctx['context'] as Map?;
-              clusterName = currentContext;
-              break;
-            }
-          }
-        }
-        if (activeContextMap == null && contexts.isNotEmpty && contexts.first is Map) {
-          final first = contexts.first as Map;
-          activeContextMap = first['context'] as Map?;
-          clusterName = first['name']?.toString() ?? clusterName;
-        }
-      }
-
-      final targetClusterName = activeContextMap?['cluster']?.toString();
-      final targetUserName = activeContextMap?['user']?.toString();
-      if (activeContextMap?['namespace'] != null) {
-        defaultNs = activeContextMap!['namespace'].toString();
-      }
-
-      // Find cluster server & CA
-      if (doc['clusters'] is List) {
-        for (final c in doc['clusters'] as List) {
-          if (c is Map) {
-            final cName = c['name']?.toString();
-            final cMap = c['cluster'] as Map?;
-            if (targetClusterName == null || cName == targetClusterName) {
-              if (cMap != null) {
-                serverUrl = cMap['server']?.toString() ?? serverUrl;
-                caCert = cMap['certificate-authority-data']?.toString();
-                if (caCert == null && cMap['certificate-authority'] != null) {
-                  final caPath = cMap['certificate-authority'].toString();
-                  try {
-                    final caFile = File(caPath);
-                    if (caFile.existsSync()) {
-                      caCert = caFile.readAsStringSync();
-                    }
-                  } catch (_) {}
-                }
-                skipTls = cMap['insecure-skip-tls-verify'] == true ||
-                    cMap['insecure-skip-tls-verify']?.toString() == 'true';
-                if (targetClusterName != null) break;
-              }
-            }
-          }
-        }
-      }
-
-      // Find user credentials (token, client certificate, client key)
-      if (doc['users'] is List) {
-        for (final u in doc['users'] as List) {
-          if (u is Map) {
-            final uName = u['name']?.toString();
-            final uMap = u['user'] as Map?;
-            if (targetUserName == null || uName == targetUserName) {
-              if (uMap != null) {
-                token = uMap['token']?.toString();
-                if ((token == null || token.isEmpty) && uMap['tokenFile'] != null) {
-                  try {
-                    final tokenFile = File(uMap['tokenFile'].toString());
-                    if (tokenFile.existsSync()) token = tokenFile.readAsStringSync().trim();
-                  } catch (_) {}
-                }
-                clientCert = uMap['client-certificate-data']?.toString();
-                clientKey = uMap['client-key-data']?.toString();
-
-                if (clientCert == null && uMap['client-certificate'] != null) {
-                  final certPath = uMap['client-certificate'].toString();
-                  try {
-                    final certFile = File(certPath);
-                    if (certFile.existsSync()) clientCert = certFile.readAsStringSync();
-                  } catch (_) {}
-                }
-
-                if (clientKey == null && uMap['client-key'] != null) {
-                  final keyPath = uMap['client-key'].toString();
-                  try {
-                    final keyFile = File(keyPath);
-                    if (keyFile.existsSync()) clientKey = keyFile.readAsStringSync();
-                  } catch (_) {}
-                }
-
-                final hasStaticCreds = (token != null && token.isNotEmpty) ||
-                    (clientCert != null && clientKey != null);
-                if (!hasStaticCreds && (uMap['exec'] != null || uMap['auth-provider'] != null)) {
-                  throw const FormatException(
-                    'this kubeconfig user authenticates with an exec or auth-provider plugin '
-                    '(for example aws, gke-gcloud-auth-plugin or kubelogin), which cannot run on Android. '
-                    'Use a ServiceAccount token or a client certificate instead.',
-                  );
-                }
-                if (uMap['username'] != null && !hasStaticCreds) {
-                  throw const FormatException(
-                    'basic auth (username/password) is not supported; use a bearer token or a client certificate.',
-                  );
-                }
-
-                if (targetUserName != null) break;
-              }
-            }
-          }
-        }
-      }
-
-      final config = KubeConfig(
-        name: clusterName,
-        server: serverUrl,
-        token: token,
-        caCert: caCert,
-        clientCertData: clientCert,
-        clientKeyData: clientKey,
-        defaultNamespace: defaultNs,
-        insecureSkipTlsVerify: skipTls,
+      return _parseKubeconfig(yamlString);
+    } on YamlException catch (e) {
+      final line = e.span == null ? '' : ' at line ${e.span!.start.line + 1}';
+      throw FormatException('Invalid kubeconfig YAML$line: ${e.message}');
+    } on FormatException catch (e) {
+      throw FormatException('Invalid kubeconfig: ${e.message}');
+    } on TypeError {
+      throw const FormatException(
+        'Invalid kubeconfig: unexpected structure (clusters, contexts and users must be lists of name/value maps)',
       );
-
-      await saveConfig(config);
-      return config;
-    } catch (e) {
-      throw 'Failed to parse Kubeconfig YAML: $e';
     }
+  }
+
+  static KubeConfig _parseKubeconfig(String yamlString) {
+    final doc = loadYaml(yamlString);
+    if (doc is! Map) {
+      throw const FormatException('expected a YAML mapping with clusters, contexts and users');
+    }
+
+    String clusterName = 'Imported Cluster';
+    String? serverUrl;
+    String? token;
+    String? caCert;
+    String? clientCert;
+    String? clientKey;
+    String defaultNs = 'default';
+    // TLS verification is on unless the kubeconfig explicitly opts out.
+    bool skipTls = false;
+
+    // Find current-context
+    final currentContext = doc['current-context']?.toString();
+    Map? activeContextMap;
+
+    if (doc['contexts'] is List) {
+      final contexts = doc['contexts'] as List;
+      for (final ctx in contexts) {
+        if (ctx is Map) {
+          if (currentContext != null && ctx['name']?.toString() == currentContext) {
+            activeContextMap = ctx['context'] as Map?;
+            clusterName = currentContext;
+            break;
+          }
+        }
+      }
+      if (activeContextMap == null && contexts.isNotEmpty && contexts.first is Map) {
+        final first = contexts.first as Map;
+        activeContextMap = first['context'] as Map?;
+        clusterName = first['name']?.toString() ?? clusterName;
+      }
+    }
+
+    final targetClusterName = activeContextMap?['cluster']?.toString();
+    final targetUserName = activeContextMap?['user']?.toString();
+    if (activeContextMap?['namespace'] != null) {
+      defaultNs = activeContextMap!['namespace'].toString();
+    }
+
+    // Find cluster server & CA
+    if (doc['clusters'] is List) {
+      for (final c in doc['clusters'] as List) {
+        if (c is Map) {
+          final cName = c['name']?.toString();
+          final cMap = c['cluster'] as Map?;
+          if (targetClusterName == null || cName == targetClusterName) {
+            if (cMap != null) {
+              serverUrl = cMap['server']?.toString();
+              caCert = cMap['certificate-authority-data']?.toString();
+              if (caCert == null && cMap['certificate-authority'] != null) {
+                final caPath = cMap['certificate-authority'].toString();
+                try {
+                  final caFile = File(caPath);
+                  if (caFile.existsSync()) {
+                    caCert = caFile.readAsStringSync();
+                  }
+                } catch (_) {}
+              }
+              skipTls = cMap['insecure-skip-tls-verify'] == true ||
+                  cMap['insecure-skip-tls-verify']?.toString() == 'true';
+              if (targetClusterName != null) break;
+            }
+          }
+        }
+      }
+    }
+
+    // Find user credentials (token, client certificate, client key)
+    if (doc['users'] is List) {
+      for (final u in doc['users'] as List) {
+        if (u is Map) {
+          final uName = u['name']?.toString();
+          final uMap = u['user'] as Map?;
+          if (targetUserName == null || uName == targetUserName) {
+            if (uMap != null) {
+              token = uMap['token']?.toString();
+              if ((token == null || token.isEmpty) && uMap['tokenFile'] != null) {
+                try {
+                  final tokenFile = File(uMap['tokenFile'].toString());
+                  if (tokenFile.existsSync()) token = tokenFile.readAsStringSync().trim();
+                } catch (_) {}
+              }
+              clientCert = uMap['client-certificate-data']?.toString();
+              clientKey = uMap['client-key-data']?.toString();
+
+              if (clientCert == null && uMap['client-certificate'] != null) {
+                final certPath = uMap['client-certificate'].toString();
+                try {
+                  final certFile = File(certPath);
+                  if (certFile.existsSync()) clientCert = certFile.readAsStringSync();
+                } catch (_) {}
+              }
+
+              if (clientKey == null && uMap['client-key'] != null) {
+                final keyPath = uMap['client-key'].toString();
+                try {
+                  final keyFile = File(keyPath);
+                  if (keyFile.existsSync()) clientKey = keyFile.readAsStringSync();
+                } catch (_) {}
+              }
+
+              final hasStaticCreds = (token != null && token.isNotEmpty) ||
+                  (clientCert != null && clientKey != null);
+              if (!hasStaticCreds && (uMap['exec'] != null || uMap['auth-provider'] != null)) {
+                throw const FormatException(
+                  'this kubeconfig user authenticates with an exec or auth-provider plugin '
+                  '(for example aws, gke-gcloud-auth-plugin or kubelogin), which cannot run on Android. '
+                  'Use a ServiceAccount token or a client certificate instead.',
+                );
+              }
+              if (uMap['username'] != null && !hasStaticCreds) {
+                throw const FormatException(
+                  'basic auth (username/password) is not supported; use a bearer token or a client certificate.',
+                );
+              }
+
+              if (targetUserName != null) break;
+            }
+          }
+        }
+      }
+    }
+
+    if (serverUrl == null || serverUrl.isEmpty) {
+      throw FormatException(targetClusterName == null
+          ? 'no clusters[].cluster.server found'
+          : 'cluster "$targetClusterName" (used by context "$clusterName") is missing or has no server');
+    }
+
+    return KubeConfig(
+      name: clusterName,
+      server: serverUrl,
+      token: token,
+      caCert: caCert,
+      clientCertData: clientCert,
+      clientKeyData: clientKey,
+      defaultNamespace: defaultNs,
+      insecureSkipTlsVerify: skipTls,
+    );
   }
 
   static Future<List<KubeConfig>> loadConfigs() async {
