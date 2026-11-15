@@ -93,26 +93,6 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
         ),
         const SizedBox(height: 16),
         _buildPresetCard(
-          title: 'User Test Cluster (kubernetes-admin@kubernetes)',
-          subtitle: 'https://172.16.0.2:6443 (mTLS credentials with loopback fallback)',
-          icon: Icons.security_rounded,
-          color: LensTheme.statusGreen,
-          onTap: () async {
-            setState(() => _isLoading = true);
-            try {
-              final config = await KubeConfig.addFromYaml(KubeConfig.testKubeconfigYaml);
-              await _saveAndFinish(config);
-            } catch (e) {
-              if (!mounted) return;
-              setState(() => _isLoading = false);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to load test cluster: $e'), backgroundColor: LensTheme.statusRed),
-              );
-            }
-          },
-        ),
-        const SizedBox(height: 10),
-        _buildPresetCard(
           title: 'Auto-Detect Linxr / K3s Node',
           subtitle: 'Scan /sdcard/Linxr/k3s.yaml and shared storage',
           icon: Icons.auto_awesome_rounded,
@@ -284,19 +264,6 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
                           );
                         }
                       }
-                    },
-                  ),
-                  TextButton.icon(
-                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6)),
-                    icon: const Icon(Icons.play_circle_fill_rounded, size: 14, color: LensTheme.statusAmber),
-                    label: const Text('Insert Test Config', style: TextStyle(fontSize: 11, color: LensTheme.statusAmber)),
-                    onPressed: () {
-                      setState(() {
-                        _yamlController.text = KubeConfig.testKubeconfigYaml;
-                      });
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Inserted test kubeconfig (kubernetes-admin@kubernetes)!')),
-                      );
                     },
                   ),
                 ],
