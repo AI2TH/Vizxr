@@ -2103,6 +2103,27 @@ master:
     );
   }
 
+  /// Current CPU (cores) and memory (bytes) of a pod, summed over its
+  /// containers, from metrics.k8s.io. Null when metrics-server is missing,
+  /// the pod has no sample yet, or in demo mode.
+  Future<({double cpuCores, double memBytes})?> fetchPodMetrics(String namespace, String name) async {
+    if (isDemo) return null;
+    try {
+      final json = await _request('GET', '/apis/metrics.k8s.io/v1beta1/namespaces/$namespace/pods/$name');
+      var cpu = 0.0;
+      var mem = 0.0;
+      for (final c in (json['containers'] as List?) ?? const []) {
+        if (c is! Map || c['usage'] is! Map) continue;
+        final usage = c['usage'] as Map;
+        cpu += K8sQuantity.tryParse(usage['cpu']) ?? 0;
+        mem += K8sQuantity.tryParse(usage['memory']) ?? 0;
+      }
+      return (cpuCores: cpu, memBytes: mem);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Cluster-wide CPU and memory: allocatable from `/api/v1/nodes`, usage
   /// from `metrics.k8s.io/v1beta1` node metrics. When metrics-server is not
   /// installed (404) or not ready (503), usage is null and

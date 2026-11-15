@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/cluster_state.dart';
 import '../services/k8s_client.dart';
+import '../services/k8s_quantity.dart';
 import '../theme/lens_theme.dart';
 import '../screens/logs_screen.dart';
 import '../screens/pod_exec_screen.dart';
@@ -644,7 +645,10 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
   }
 
   Widget _buildMetricsTab() {
-    // Generate simulated real-time 12-point curves based on resource usage
+    final clusterState = context.watch<ClusterState>();
+    if (!clusterState.isDemo) return _buildLiveMetricsTab(clusterState.client);
+
+    // Demo cluster only: simulated 12-point curves around the mock usage.
     final cpuBase = _res.cpuUsage > 0 ? _res.cpuUsage : 0.12;
     final memBase = _res.memUsage > 0 ? _res.memUsage : 128.0;
 
@@ -692,7 +696,7 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                 showDots: true,
               ),
               const SizedBox(height: 8),
-              const Text('Live 60-second telemetry trend', style: TextStyle(fontSize: 10, color: LensTheme.textMuted)),
+              const Text('Simulated trend (demo cluster)', style: TextStyle(fontSize: 10, color: LensTheme.textMuted)),
             ],
           ),
         ),
@@ -727,11 +731,66 @@ class _ResourceInspectorSheetState extends State<ResourceInspectorSheet> with Si
                 showDots: true,
               ),
               const SizedBox(height: 8),
-              const Text('Resident Set Size (RSS) memory allocation', style: TextStyle(fontSize: 10, color: LensTheme.textMuted)),
+              const Text('Simulated trend (demo cluster)', style: TextStyle(fontSize: 10, color: LensTheme.textMuted)),
             ],
           ),
         ),
       ],
+    );
+  }
+
+  /// Live clusters: current usage from metrics-server, no invented history.
+  Widget _buildLiveMetricsTab(K8sClientService client) {
+    if (_res.type != K8sResourceType.pod) {
+      return const Center(
+        child: Text('Usage metrics are shown for pods.', style: TextStyle(color: LensTheme.textMuted, fontSize: 13)),
+      );
+    }
+    return FutureBuilder<({double cpuCores, double memBytes})?>(
+      future: client.fetchPodMetrics(_res.namespace, _res.name),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: LensTheme.cyanAccent));
+        }
+        final m = snapshot.data;
+        if (m == null) {
+          return const Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'Metrics unavailable: install metrics-server, or wait for the first sample (about a minute after the pod starts).',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: LensTheme.textMuted, fontSize: 13),
+            ),
+          );
+        }
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _buildMetricRow(Icons.speed_rounded, 'CPU usage', K8sQuantity.formatCores(m.cpuCores), LensTheme.cyanAccent),
+            const SizedBox(height: 12),
+            _buildMetricRow(Icons.memory_rounded, 'Memory (working set)', K8sQuantity.formatBytes(m.memBytes), LensTheme.purpleAccent),
+            const SizedBox(height: 12),
+            const Text('Current sample from metrics.k8s.io', style: TextStyle(fontSize: 10, color: LensTheme.textMuted)),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildMetricRow(IconData icon, String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: LensTheme.cardDecoration(radius: 14),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: LensTheme.textPrimary)),
+          ),
+          Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+        ],
+      ),
     );
   }
 
