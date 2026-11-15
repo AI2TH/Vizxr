@@ -34,7 +34,7 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
     super.dispose();
   }
 
-  Future<void> _applyManifest() async {
+  Future<void> _applyManifest({bool forceConflicts = false}) async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
 
@@ -42,7 +42,7 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
     final clusterState = context.read<ClusterState>();
 
     try {
-      final result = await clusterState.applyManifest(text);
+      final result = await clusterState.applyManifest(text, forceConflicts: forceConflicts);
       if (!mounted) return;
       setState(() => _isApplying = false);
 
@@ -55,7 +55,7 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
         );
         Navigator.pop(context, true);
       } else {
-        _showErrorDialog(result.message);
+        _showErrorDialog(result.message, offerForce: result.conflict && !forceConflicts);
       }
     } catch (e) {
       if (!mounted) return;
@@ -64,7 +64,7 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
     }
   }
 
-  void _showErrorDialog(String error) {
+  void _showErrorDialog(String error, {bool offerForce = false}) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -78,6 +78,14 @@ class _YamlEditorScreenState extends State<YamlEditorScreen> {
         ),
         content: SelectableText(error, style: const TextStyle(color: LensTheme.textPrimary)),
         actions: [
+          if (offerForce)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _applyManifest(forceConflicts: true);
+              },
+              child: const Text('Force apply (take ownership)', style: TextStyle(color: LensTheme.statusAmber)),
+            ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: LensTheme.cyanAccent, foregroundColor: Colors.black),
             onPressed: () => Navigator.pop(ctx),

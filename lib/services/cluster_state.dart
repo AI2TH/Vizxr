@@ -132,8 +132,12 @@ class ClusterState extends ChangeNotifier {
     await refreshConfigs();
   }
 
-  Future<ManifestApplyResult> applyManifest(String yamlOrJson) async {
-    final result = await _activeClient.applyManifest(yamlOrJson, targetNamespace: _currentNamespace);
+  Future<ManifestApplyResult> applyManifest(String yamlOrJson, {bool forceConflicts = false}) async {
+    final result = await _activeClient.applyManifest(
+      yamlOrJson,
+      targetNamespace: _currentNamespace,
+      forceConflicts: forceConflicts,
+    );
     notifyListeners();
     return result;
   }
