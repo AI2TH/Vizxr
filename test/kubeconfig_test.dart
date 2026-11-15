@@ -49,7 +49,7 @@ users:
 
     test('loadConfigs ensures default local and demo clusters are present', () async {
       final configs = await KubeConfig.loadConfigs();
-      expect(configs.any((c) => c.server.contains('127.0.0.1:6443')), isTrue);
+      expect(configs.any((c) => c.kind == ClusterKind.linxrOnPhone), isTrue);
       expect(configs.any((c) => c.name.contains('Demo Cluster')), isTrue);
     });
 

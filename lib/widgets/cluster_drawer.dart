@@ -197,7 +197,7 @@ class ClusterDrawer extends StatelessWidget {
                       leading: Icon(
                         isDemoItem
                             ? Icons.auto_awesome_rounded
-                            : (config.server.contains('127.0.0.1') ? Icons.smartphone_rounded : Icons.cloud_queue_rounded),
+                            : (config.kind == ClusterKind.linxrOnPhone ? Icons.smartphone_rounded : Icons.cloud_queue_rounded),
                         color: isDemoItem
                             ? LensTheme.purpleAccent
                             : (isActive ? LensTheme.cyanAccent : LensTheme.textMuted),

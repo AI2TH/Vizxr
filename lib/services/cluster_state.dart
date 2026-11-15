@@ -63,6 +63,7 @@ class ClusterState extends ChangeNotifier {
       clientCertData: clientCert,
       clientKeyData: clientKey,
       insecureSkipTlsVerify: insecure,
+      fallbackBaseUrls: _activeConfig?.fallbackServers ?? const [],
       isDemo: isDemo,
     );
   }

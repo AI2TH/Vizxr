@@ -109,30 +109,20 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
               await _saveAndFinish(detected);
             } else {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('No exported k3s.yaml found on storage. Using default 127.0.0.1:6443.')),
+                const SnackBar(content: Text('No exported k3s.yaml found on storage. Using "Linxr on this phone".')),
               );
-              final fallback = KubeConfig(
-                name: 'Linxr Local Cluster',
-                server: 'https://127.0.0.1:6443',
-                insecureSkipTlsVerify: true,
-              );
-              await _saveAndFinish(fallback);
+              await _saveAndFinish(KubeConfig.linxrOnThisPhone());
             }
           },
         ),
         const SizedBox(height: 10),
         _buildPresetCard(
-          title: 'Linxr / Kubxr Local Loopback',
-          subtitle: 'https://127.0.0.1:6443 (On-Device Mobile VM)',
+          title: 'Linxr on this phone',
+          subtitle: 'k3s from Linxr: tries 127.0.0.1:6443, then Linxr\'s VM at 172.16.0.2:6443',
           icon: Icons.smartphone_rounded,
           color: LensTheme.cyanAccent,
           onTap: () async {
-            final config = KubeConfig(
-              name: 'Linxr Local Cluster',
-              server: 'https://127.0.0.1:6443',
-              insecureSkipTlsVerify: true,
-            );
-            await _saveAndFinish(config);
+            await _saveAndFinish(KubeConfig.linxrOnThisPhone());
           },
         ),
         const SizedBox(height: 10),
@@ -143,6 +133,7 @@ class _AddClusterScreenState extends State<AddClusterScreen> with SingleTickerPr
           color: LensTheme.purpleAccent,
           onTap: () async {
             final config = KubeConfig(
+              id: KubeConfig.demoId,
               name: 'Demo Cluster (Simulation)',
               server: 'https://demo.k8s.local',
               insecureSkipTlsVerify: true,

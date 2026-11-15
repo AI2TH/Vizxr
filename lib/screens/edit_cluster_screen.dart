@@ -20,6 +20,7 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
   late final TextEditingController _namespaceController;
   late final TextEditingController _caCertController;
   late bool _verifyTls;
+  late bool _linxr;
   bool _saving = false;
 
   @override
@@ -31,6 +32,7 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
     _namespaceController = TextEditingController(text: c.defaultNamespace);
     _caCertController = TextEditingController(text: c.caCert ?? '');
     _verifyTls = !c.insecureSkipTlsVerify;
+    _linxr = c.kind == ClusterKind.linxrOnPhone;
   }
 
   @override
@@ -67,6 +69,7 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
       clientKeyData: widget.config.clientKeyData,
       defaultNamespace: ns.isEmpty ? 'default' : ns,
       insecureSkipTlsVerify: !_verifyTls,
+      kind: _linxr ? ClusterKind.linxrOnPhone : ClusterKind.remote,
     );
     await clusterState.updateConfig(updated);
     if (!mounted) return;
@@ -161,6 +164,18 @@ class _EditClusterScreenState extends State<EditClusterScreen> {
             value: _verifyTls,
             activeColor: LensTheme.cyanAccent,
             onChanged: (val) => setState(() => _verifyTls = val),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Linxr on this phone', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            subtitle: const Text(
+              'k3s running in Linxr on this device: if the server cannot be reached, also try the other Linxr '
+              'address (127.0.0.1 or the VM at 172.16.0.2) on the same port.',
+              style: TextStyle(fontSize: 11, color: LensTheme.textMuted),
+            ),
+            value: _linxr,
+            activeColor: LensTheme.cyanAccent,
+            onChanged: (val) => setState(() => _linxr = val),
           ),
           const SizedBox(height: 16),
           ElevatedButton(

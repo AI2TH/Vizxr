@@ -5,6 +5,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yaml/yaml.dart';
 import 'secret_store.dart';
 
+/// How Vizxr reaches a cluster.
+enum ClusterKind {
+  /// Any cluster: only its API server URL is used.
+  remote,
+
+  /// k3s from Linxr on the same phone. Linxr's API server is reachable at
+  /// 127.0.0.1 (port forward) or at its VM address 172.16.0.2, so both are
+  /// tried. This used to be a silent retry for every cluster.
+  linxrOnPhone,
+}
+
 class KubeConfig {
   /// Stable key for storage. Two kubeconfigs with the same context name
   /// (k3s always calls it "default") no longer overwrite each other.
@@ -17,6 +28,7 @@ class KubeConfig {
   final String? clientKeyData;
   final String defaultNamespace;
   final bool insecureSkipTlsVerify;
+  final ClusterKind kind;
 
   KubeConfig({
     String? id,
@@ -28,6 +40,7 @@ class KubeConfig {
     this.clientKeyData,
     this.defaultNamespace = 'default',
     this.insecureSkipTlsVerify = false,
+    this.kind = ClusterKind.remote,
   }) : id = (id == null || id.isEmpty) ? newId() : id;
 
   static final Random _random = Random.secure();
@@ -39,6 +52,29 @@ class KubeConfig {
   /// Ids of the clusters Vizxr always offers.
   static const String linxrLocalId = 'builtin-linxr-local';
   static const String demoId = 'builtin-demo';
+
+  /// Addresses of Linxr's k3s API server on the phone.
+  static const String linxrLoopbackHost = '127.0.0.1';
+  static const String linxrVmHost = '172.16.0.2';
+
+  /// For a Linxr cluster: the same URL with the other Linxr address.
+  static List<String> linxrAlternateServers(String server) {
+    final uri = Uri.tryParse(server);
+    if (uri == null) return const [];
+    if (uri.host == linxrVmHost) return [uri.replace(host: linxrLoopbackHost).toString()];
+    if (uri.host == linxrLoopbackHost || uri.host == 'localhost') return [uri.replace(host: linxrVmHost).toString()];
+    return const [];
+  }
+
+  /// Extra URLs the client may try when [server] cannot be reached.
+  /// Empty unless this is a [ClusterKind.linxrOnPhone] cluster.
+  List<String> get fallbackServers =>
+      kind == ClusterKind.linxrOnPhone ? linxrAlternateServers(server) : const [];
+
+  static bool _isLinxrHost(String server) {
+    final host = Uri.tryParse(server)?.host;
+    return host == linxrLoopbackHost || host == linxrVmHost;
+  }
 
   /// [name], or "name (2)", "name (3)"... if it is already taken.
   static String uniqueName(String name, Iterable<String> taken) {
@@ -60,6 +96,7 @@ class KubeConfig {
     String? clientKeyData,
     String? defaultNamespace,
     bool? insecureSkipTlsVerify,
+    ClusterKind? kind,
   }) =>
       KubeConfig(
         id: id,
@@ -71,6 +108,7 @@ class KubeConfig {
         clientKeyData: clientKeyData ?? this.clientKeyData,
         defaultNamespace: defaultNamespace ?? this.defaultNamespace,
         insecureSkipTlsVerify: insecureSkipTlsVerify ?? this.insecureSkipTlsVerify,
+        kind: kind ?? this.kind,
       );
 
   /// Everything except the credentials. This is what goes to SharedPreferences.
@@ -82,6 +120,7 @@ class KubeConfig {
     'clientCertData': clientCertData,
     'defaultNamespace': defaultNamespace,
     'insecureSkipTlsVerify': insecureSkipTlsVerify,
+    'kind': kind.name,
   };
 
   /// The credentials, kept in [secretStore] (Android Keystore) only.
@@ -100,7 +139,18 @@ class KubeConfig {
     clientKeyData: secrets?['clientKeyData']?.toString() ?? json['clientKeyData'],
     defaultNamespace: json['defaultNamespace'] ?? 'default',
     insecureSkipTlsVerify: json['insecureSkipTlsVerify'] ?? false,
+    kind: _kindFromJson(json),
   );
+
+  /// Configs saved before ClusterKind existed got the Linxr address retry
+  /// whenever their server was 127.0.0.1 or 172.16.0.2; they keep it.
+  static ClusterKind _kindFromJson(Map<String, dynamic> json) {
+    final stored = json['kind']?.toString();
+    for (final k in ClusterKind.values) {
+      if (k.name == stored) return k;
+    }
+    return _isLinxrHost(json['server']?.toString() ?? '') ? ClusterKind.linxrOnPhone : ClusterKind.remote;
+  }
 
   static const String _storageKey = 'vizxr_kubeconfigs';
 
@@ -207,7 +257,10 @@ class KubeConfig {
         final file = File(path);
         if (await file.exists()) {
           final content = await file.readAsString();
-          return parseKubeconfig(content);
+          final config = parseKubeconfig(content);
+          // Found in Linxr's export locations and pointing at Linxr's
+          // addresses: mark it so both addresses are tried.
+          return _isLinxrHost(config.server) ? config.copyWith(kind: ClusterKind.linxrOnPhone) : config;
         }
       } catch (_) {}
     }
@@ -387,6 +440,16 @@ class KubeConfig {
     );
   }
 
+  /// The built-in entry for k3s from Linxr on this phone. k3s generates its
+  /// own CA, so verification is off until the user pastes that CA.
+  static KubeConfig linxrOnThisPhone({String server = 'https://127.0.0.1:6443'}) => KubeConfig(
+        id: linxrLocalId,
+        name: 'Linxr on this phone',
+        server: server,
+        insecureSkipTlsVerify: true,
+        kind: ClusterKind.linxrOnPhone,
+      );
+
   static Future<List<KubeConfig>> loadConfigs() async {
     final List<KubeConfig> configs = [];
     final prefs = await SharedPreferences.getInstance();
@@ -444,16 +507,8 @@ class KubeConfig {
     }
 
     // Always ensure the local Linxr / Kubxr cluster is available
-    final hasLocal = configs.any((c) => c.id == linxrLocalId || c.server.contains('127.0.0.1:6443'));
-    if (!hasLocal) {
-      configs.add(KubeConfig(
-        id: linxrLocalId,
-        name: 'Linxr Local Cluster',
-        server: 'https://127.0.0.1:6443',
-        defaultNamespace: 'default',
-        insecureSkipTlsVerify: true,
-      ));
-    }
+    final hasLocal = configs.any((c) => c.id == linxrLocalId || c.kind == ClusterKind.linxrOnPhone);
+    if (!hasLocal) configs.add(linxrOnThisPhone());
 
     // Always ensure Demo Simulator Cluster is available for offline testing
     final hasDemo = configs.any((c) => c.id == demoId || c.name == 'Demo Cluster (Simulation)');

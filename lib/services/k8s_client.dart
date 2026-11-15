@@ -200,20 +200,16 @@ class K8sClientService {
 
   String get effectiveBaseUrl => _workingBaseUrl ?? baseUrl;
 
-  List<String> get _candidateBaseUrls {
+  /// Other URLs for the same API server, tried only when [baseUrl] cannot
+  /// be reached. Set for "Linxr on this phone" clusters, empty otherwise.
+  final List<String> fallbackBaseUrls;
+
+  /// URLs tried in order: the last one that answered, [baseUrl], then
+  /// [fallbackBaseUrls].
+  List<String> get candidateBaseUrls {
     final list = <String>[];
-    if (_workingBaseUrl != null) {
-      list.add(_workingBaseUrl!);
-    }
-    if (!list.contains(baseUrl)) {
-      list.add(baseUrl);
-    }
-    if (baseUrl.contains('172.16.0.2')) {
-      final loopback = baseUrl.replaceAll('172.16.0.2', '127.0.0.1');
-      if (!list.contains(loopback)) list.add(loopback);
-    } else if (baseUrl.contains('127.0.0.1')) {
-      final vm = baseUrl.replaceAll('127.0.0.1', '172.16.0.2');
-      if (!list.contains(vm)) list.add(vm);
+    for (final url in [if (_workingBaseUrl != null) _workingBaseUrl!, baseUrl, ...fallbackBaseUrls]) {
+      if (!list.contains(url)) list.add(url);
     }
     return list;
   }
@@ -225,6 +221,7 @@ class K8sClientService {
     this.clientCertData,
     this.clientKeyData,
     this.insecureSkipTlsVerify = false,
+    this.fallbackBaseUrls = const [],
     bool? isDemo,
   }) : isDemo = isDemo ?? isDemoServer(baseUrl) {
     _initHttpClient();
@@ -1063,8 +1060,8 @@ master:
 
   /// Sends one API request.
   ///
-  /// The loopback / VM fallback URLs are only tried when the connection
-  /// itself fails. Once a server has answered, its HTTP error is thrown
+  /// The [fallbackBaseUrls] (Linxr clusters only) are tried only when the
+  /// connection itself fails. Once a server has answered, its HTTP error is thrown
   /// as-is: retrying a POST or DELETE elsewhere could apply it twice and
   /// would hide the real error (403, 409, 422...) behind a connect error.
   Future<dynamic> _request(
@@ -1076,7 +1073,7 @@ master:
     final client = _httpClient;
     if (client == null) throw StateError('Kubernetes client is closed');
     Object? lastError;
-    final candidates = _candidateBaseUrls;
+    final candidates = candidateBaseUrls;
 
     for (final base in candidates) {
       final uri = Uri.parse('$base$endpoint');
