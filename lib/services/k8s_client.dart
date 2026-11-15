@@ -83,10 +83,15 @@ class PortForwardTarget {
 }
 
 /// An error response from the Kubernetes API server.
-class K8sApiException extends HttpException {
+class K8sApiException implements Exception {
   final int statusCode;
+  final String message;
+  final Uri? uri;
 
-  const K8sApiException(this.statusCode, String message, {Uri? uri}) : super(message, uri: uri);
+  const K8sApiException(this.statusCode, this.message, {this.uri});
+
+  @override
+  String toString() => message;
 
   /// Builds the exception from a response, using the `message` of a
   /// Kubernetes `Status` body when there is one.
