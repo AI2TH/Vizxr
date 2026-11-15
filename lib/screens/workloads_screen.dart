@@ -211,7 +211,7 @@ class _WorkloadCategoryViewState extends State<WorkloadCategoryView> {
                 style: ElevatedButton.styleFrom(backgroundColor: LensTheme.purpleAccent, foregroundColor: Colors.white),
                 onPressed: () {
                   final demoConfig = clusterState.availableConfigs.firstWhere(
-                    (c) => c.name.contains('Demo') || c.server.contains('demo'),
+                    (c) => K8sClientService.isDemoServer(c.server),
                     orElse: () => clusterState.availableConfigs.first,
                   );
                   clusterState.setConfig(demoConfig);

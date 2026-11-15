@@ -414,7 +414,7 @@ class _ClusterScreenState extends State<ClusterScreen> with SingleTickerProvider
                       ),
                       onPressed: () {
                         final demoConfig = clusterState.availableConfigs.firstWhere(
-                          (c) => c.name.contains('Demo') || c.server.contains('demo'),
+                          (c) => K8sClientService.isDemoServer(c.server),
                           orElse: () => clusterState.availableConfigs.first,
                         );
                         clusterState.setConfig(demoConfig);

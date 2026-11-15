@@ -173,10 +173,23 @@ class K8sClientService {
     this.caCertData,
     this.clientCertData,
     this.clientKeyData,
-    this.insecureSkipTlsVerify = true,
+    this.insecureSkipTlsVerify = false,
     bool? isDemo,
-  }) : isDemo = isDemo ?? (baseUrl.contains('demo.k8s.local') || baseUrl.contains('simulation')) {
+  }) : isDemo = isDemo ?? isDemoServer(baseUrl) {
     _initHttpClient();
+  }
+
+  /// Host name of the built-in in-memory simulator.
+  static const String demoHost = 'demo.k8s.local';
+
+  /// True only for the simulator URL. A real cluster whose name or URL merely
+  /// contains "demo" must never be served mock data.
+  static bool isDemoServer(String url) => Uri.tryParse(url)?.host == demoHost;
+
+  /// Releases the underlying HTTP client. Call this when the client is
+  /// replaced (for example on a cluster switch) so sockets are not leaked.
+  void close() {
+    _httpClient?.close();
   }
 
   void _initHttpClient() {
@@ -200,6 +213,8 @@ class K8sClientService {
     }
 
     _httpClient = HttpClient(context: context);
+    // Only accept unverifiable certificates when the kubeconfig explicitly
+    // sets insecure-skip-tls-verify. Otherwise the default (reject) applies.
     if (insecureSkipTlsVerify) {
       _httpClient!.badCertificateCallback = (X509Certificate cert, String host, int port) => true;
     }

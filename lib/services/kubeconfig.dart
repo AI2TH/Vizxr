@@ -21,7 +21,7 @@ class KubeConfig {
     this.clientCertData,
     this.clientKeyData,
     this.defaultNamespace = 'default',
-    this.insecureSkipTlsVerify = true,
+    this.insecureSkipTlsVerify = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -43,7 +43,7 @@ class KubeConfig {
     clientCertData: json['clientCertData'],
     clientKeyData: json['clientKeyData'],
     defaultNamespace: json['defaultNamespace'] ?? 'default',
-    insecureSkipTlsVerify: json['insecureSkipTlsVerify'] ?? true,
+    insecureSkipTlsVerify: json['insecureSkipTlsVerify'] ?? false,
   );
 
   static const String _storageKey = 'vizxr_kubeconfigs';
@@ -136,7 +136,8 @@ class KubeConfig {
       String? clientCert;
       String? clientKey;
       String defaultNs = 'default';
-      bool skipTls = true;
+      // TLS verification is on unless the kubeconfig explicitly opts out.
+      bool skipTls = false;
 
       // Find current-context
       final currentContext = doc['current-context']?.toString();
@@ -185,9 +186,8 @@ class KubeConfig {
                     }
                   } catch (_) {}
                 }
-                if (cMap['insecure-skip-tls-verify'] == true) {
-                  skipTls = true;
-                }
+                skipTls = cMap['insecure-skip-tls-verify'] == true ||
+                    cMap['insecure-skip-tls-verify']?.toString() == 'true';
                 if (targetClusterName != null) break;
               }
             }
@@ -204,6 +204,12 @@ class KubeConfig {
             if (targetUserName == null || uName == targetUserName) {
               if (uMap != null) {
                 token = uMap['token']?.toString();
+                if ((token == null || token.isEmpty) && uMap['tokenFile'] != null) {
+                  try {
+                    final tokenFile = File(uMap['tokenFile'].toString());
+                    if (tokenFile.existsSync()) token = tokenFile.readAsStringSync().trim();
+                  } catch (_) {}
+                }
                 clientCert = uMap['client-certificate-data']?.toString();
                 clientKey = uMap['client-key-data']?.toString();
 
@@ -221,6 +227,21 @@ class KubeConfig {
                     final keyFile = File(keyPath);
                     if (keyFile.existsSync()) clientKey = keyFile.readAsStringSync();
                   } catch (_) {}
+                }
+
+                final hasStaticCreds = (token != null && token.isNotEmpty) ||
+                    (clientCert != null && clientKey != null);
+                if (!hasStaticCreds && (uMap['exec'] != null || uMap['auth-provider'] != null)) {
+                  throw const FormatException(
+                    'this kubeconfig user authenticates with an exec or auth-provider plugin '
+                    '(for example aws, gke-gcloud-auth-plugin or kubelogin), which cannot run on Android. '
+                    'Use a ServiceAccount token or a client certificate instead.',
+                  );
+                }
+                if (uMap['username'] != null && !hasStaticCreds) {
+                  throw const FormatException(
+                    'basic auth (username/password) is not supported; use a bearer token or a client certificate.',
+                  );
                 }
 
                 if (targetUserName != null) break;
